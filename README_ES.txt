@@ -1,8 +1,8 @@
-CRATEDIGGER 1.3.2 — excavar samples para boom bap
-=================================================
+YTDigger 1.4.1 — excavar samples para boom bap
+==============================================
 (Русский: README.txt · English: README_EN.txt)
 
-El programa «excava en las cajas» por sí solo: busca en YouTube Music pistas de
+El programa «excava en las cajas» por sí solo: busca en YouTube Music o YouTube pistas de
 1960–1999 (por tus etiquetas o al azar), las descarga, encuentra las partes más estables
 y corta 3 loops de cada pista. Cada loop:
   * está cortado justo en los tiempos fuertes y se repite sin clics ni desfases:
@@ -90,6 +90,12 @@ CÓMO SE USA
    contacta con YouTube; si no está allí, descarga la pista otra vez. Con tus propios archivos
    funciona si está activado «Guardar la pista original» en «Más ajustes».
 
+Cambia el servicio de búsqueda con los botones de los logotipos de YouTube Music
+y YouTube, a la derecha de las banderas de idioma, encima del nombre del programa.
+YouTube Music es la opción predeterminada; la elección se recuerda. YouTube busca
+en todos los vídeos, sin limitarse al audio oficial: puede encontrar más grabaciones,
+pero también más podcasts, Type Beats y resultados irrelevantes.
+
 Ajustes útiles:
   * «Breaks» — partes donde la batería va al frente; «Melodía» — partes con más armonía.
   * «Solo:» batería / bajo / voz / pads (para loops de 1, 2 y 4 compases) — partes donde
@@ -167,14 +173,16 @@ arrancan o fallan, el programa pasa solo a trabajar en un único hilo.
 
 QUÉ SE OBTIENE
 --------------
-Music/CrateDigger/<fecha>_<etiquetas>/
+Si ya existe una carpeta CrateDigger, el programa sigue guardando allí.
+
+Music/YTDigger/<fecha>_<etiquetas>/
   Stereo_24bit/          loops para el DAW (48 kHz, 24 bits, estéreo)
   ModelSamples_mono16/   los mismos loops en mono 16 bits (si está activado en «Más ajustes»)
   Sources_mp3/           las pistas originales completas (de ellas sale el reproceso)
   Chops/                 cada loop cortado en 8 partes (si está activado)
   MODEL_SAMPLES.txt      tabla: tempo, compases y pasos de cada loop
   credits.txt            de dónde sale cada loop (artista, enlace, tiempo en la pista)
-Music/CrateDigger/Feedback/   loops marcados con 👎 en modo depuración, y feedback.jsonl
+Music/YTDigger/Feedback/   loops marcados con 👎 en modo depuración, y feedback.jsonl
 
 Nombre del archivo: tonalidad + BPM + título + número de loop:  Amin95Quark2.wav
 Los loops de «Solo …» llevan una letra de tipo tras el BPM: D — batería, B — bajo,

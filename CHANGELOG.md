@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.1
+- Hardened shutdown: stopping analysis cannot restart the process pool or launch new fallback tasks; submitting work and closing the pool are synchronized.
+- Cleanup continues even if an individual shutdown step fails, without hiding the original processing error. Re-running a record always finalizes its pipeline, including on errors.
+- Crates with missing or invalid Camelot keys no longer break rendering or status polling: unknown keys show a dash and are excluded from compatibility highlighting. Crate rendering errors no longer interrupt polling cleanup.
+- Smaller YouTube Music / YouTube selector buttons and a refined YTDigger accent color.
+
+## 1.4
+- Renamed CrateDigger to YTDigger across the interface, launchers, program messages, credits and Model:Samples ZIP names. New installations save to `Music/YTDigger`; an existing `Music/CrateDigger` folder is reused. The `YTDIGGER_WORKERS` setting also accepts the legacy `CRATEDIGGER_WORKERS` environment variable.
+- Added a YouTube Music / YouTube search selector beside the language flags. YouTube Music remains the default and the selected service is remembered. YouTube searches all videos without the official-audio restriction, so results may also include podcasts and Type Beats.
+- Saved track metadata, source links, credits and re-downloads when re-running a record follow the selected service; older crates remain compatible.
+- Added timeouts and saving-thread health checks so stalled analysis or saving reports an error instead of waiting indefinitely. Final draining and process teardown no longer wait without a limit, and late results clean up their temporary source files.
+- Limited queued analysis results, including local imports, to control memory use. If worker processes fail, analysis falls back to a daemon thread so the pipeline can still stop waiting.
+
 ## 1.3.3
 - Scissors ✂ button on "drums only" loops: cuts the loop into one-shot samples and downloads them all as one ZIP. The button sits in the loop's action row, next to favorite / save / remove. All action buttons are the same size (34 px); the four buttons of a "drums only" loop stand with no gap, and the three buttons of other loops are spaced wider so both rows have the same total width.
 - The one-shot ZIP is named `1shots_<key>_<date>_<time>.zip` (e.g. `1shots_Amin_2026-10-22_05-07.zip`).

@@ -1,9 +1,9 @@
-CRATEDIGGER 1.3.2 — sample digging for boom bap
-===============================================
+YTDigger 1.4.1 — sample digging for boom bap
+============================================
 (Русский: README.txt · Español: README_ES.txt)
 
 The program "digs through the crates" by itself: it finds tracks from 1960–1999 on
-YouTube Music (by your tags or at random), downloads them, finds the steadiest parts
+YouTube Music or YouTube (by your tags or at random), downloads them, finds the steadiest parts
 and cuts 3 loops from every track. Every loop:
   * is cut exactly on the downbeats and loops without clicks or drift:
     the boundaries sit on the real start of the hit (even with a soft attack or a flam),
@@ -88,6 +88,12 @@ HOW TO USE
    YouTube; if it's not there, the track is downloaded again. For your own files the
    re-run works if "Keep the source track" is on in "More settings".
 
+Switch the search service with the YouTube Music and YouTube logo buttons to the
+right of the language flags, above the program name. YouTube Music is the default;
+your choice is remembered. YouTube searches all videos, without restricting results
+to official audio: it can find more recordings, but also more podcasts, Type Beats
+and unrelated results.
+
 Useful settings:
   * "Breaks" — parts where the drums are up front; "Melody" — parts with more harmony.
   * "Only:" drums / bass / vocals / pads (for 1, 2 and 4 bar loops) — parts where only
@@ -165,14 +171,16 @@ or crash for some reason, the program switches to working in a single thread by 
 
 WHAT YOU GET
 ------------
-Music/CrateDigger/<date>_<tags>/
+If a CrateDigger folder already exists, the program keeps saving there.
+
+Music/YTDigger/<date>_<tags>/
   Stereo_24bit/          loops for a DAW (48 kHz, 24-bit, stereo)
   ModelSamples_mono16/   the same loops in mono 16-bit (if enabled in "More settings")
   Sources_mp3/           the full source tracks (re-runs work from them)
   Chops/                 each loop cut into 8 parts (if enabled)
   MODEL_SAMPLES.txt      table: tempo, bars, steps for each loop
   credits.txt            where each loop comes from (artist, link, time in the track)
-Music/CrateDigger/Feedback/   loops marked 👎 in Debugging mode, and feedback.jsonl
+Music/YTDigger/Feedback/   loops marked 👎 in Debugging mode, and feedback.jsonl
 
 File name: key + BPM + title + loop number:  Amin95Quark2.wav
 Loops from "Only …" have a type letter after the BPM: D — drums, B — bass,
