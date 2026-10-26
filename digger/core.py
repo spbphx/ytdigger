@@ -499,7 +499,8 @@ class Pipeline:
         self.q: queue.Queue = queue.Queue(maxsize=self.slots + 1)  # one extra slot for the shutdown sentinel
         self.saver = threading.Thread(target=self._save_loop, daemon=True, name="saver")
         self.saver.start()
-        state.stop_hooks.append(self.pool.kill)  # "Stop" — at once, even if the network is busy downloading
+        self._stop_hook = self.pool.kill
+        state.stop_hooks.append(self._stop_hook)  # "Stop" — at once, even if the network is busy downloading
 
     @property
     def slots(self) -> int:
@@ -641,6 +642,7 @@ class Pipeline:
     def finish(self):
         """Drain with a watchdog, then shut down without an unbounded executor wait."""
         failed = True
+        shutdown_error = None
         deadline = time.monotonic() + self.FINISH_TIMEOUT
         stopped = False
         try:
@@ -663,17 +665,23 @@ class Pipeline:
             # Late callbacks release their source files instead of filling an abandoned queue.
             with self.cv:
                 self._closed.set()
-            if failed or self.state.stop:
-                self.pool.kill()
-            else:
-                self.pool.close()
-            self.q.put_nowait(None)
-            self.saver.join(timeout=self.SAVER_JOIN_TIMEOUT)
-            if self.pool.kill in self.state.stop_hooks:
-                self.state.stop_hooks.remove(self.pool.kill)
+            # One teardown failure must not skip the remaining steps or hide the drain error.
+            shutdown = self.pool.kill if failed or self.state.stop else self.pool.close
+            for step in (shutdown, lambda: self.q.put_nowait(None),
+                         lambda: self.saver.join(timeout=self.SAVER_JOIN_TIMEOUT)):
+                try:
+                    step()
+                except Exception as e:
+                    if shutdown_error is None:
+                        shutdown_error = e
+                    traceback.print_exc()
+            if self._stop_hook in self.state.stop_hooks:
+                self.state.stop_hooks.remove(self._stop_hook)
         if self.saver.is_alive():
             # Do not race Session.finish against a writer still inside save().
             raise RuntimeError(T("The saving thread did not finish. Restart the program before digging again."))
+        if shutdown_error is not None:
+            raise shutdown_error
 
 
 def run_dig(params: dict, root: Path, state: JobState):
@@ -907,7 +915,8 @@ def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobStat
         log(T("⏹ Stopped"))
     except Exception as e:
         log(f"✕ {label}: {explain_error(e)}")
-    pipe.finish()
+    finally:
+        pipe.finish()
     ok = pipe.accepted > 0
     if not ok and not state.stop:
         with state.lock:

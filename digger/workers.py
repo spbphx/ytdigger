@@ -89,6 +89,8 @@ class Analyzer:
         self.tmp = tmp
         self.ex: ProcessPoolExecutor | None = None
         self.crashes = 0
+        self._lock = threading.RLock()
+        self._closed = threading.Event()
         self._clean_tmp()                         # leftovers of a previous "Stop" — temporary audio
         self._start()
 
@@ -134,22 +136,38 @@ class Analyzer:
     def submit(self, fn, *args) -> Future:
         """Hand a task to a process; if the pool is broken, recreate it, and after frequent crashes
         run the task in a daemon thread (still subject to the pipeline watchdog)."""
+        with self._lock:
+            return self._submit(fn, *args)
+
+    def _submit(self, fn, *args) -> Future:
+        if self._closed.is_set():
+            f = Future()
+            f.cancel()
+            return f
         if self.ex is not None:
             try:
                 return self.ex.submit(fn, *args)
             except (BrokenProcessPool, RuntimeError):
                 self.crashes += 1
                 self._drop()
+                if self._closed.is_set():
+                    return self._submit(fn, *args)
                 if self.crashes < MAX_CRASHES:
                     self.log(T("⚠ An analysis process crashed — restarting"))
                     self._start()
                     if self.ex is not None:
-                        return self.submit(fn, *args)
+                        return self._submit(fn, *args)
                 else:
                     self.log(T("⚠ Analysis processes keep crashing — continuing in a single thread"))
         f: Future = Future()
+        if self._closed.is_set():
+            f.cancel()
+            return f
 
         def work():
+            if self._closed.is_set():
+                f.cancel()
+                return
             if not f.set_running_or_notify_cancel():
                 return
             try:
@@ -171,7 +189,9 @@ class Analyzer:
 
     def kill(self):
         """"Stop": kill the processes immediately (unfinished analyses are abandoned)."""
-        ex, self.ex = self.ex, None
+        self._closed.set()
+        with self._lock:
+            ex, self.ex = self.ex, None
         if ex is None:
             return
         procs = list((getattr(ex, "_processes", None) or {}).values())
@@ -194,6 +214,8 @@ class Analyzer:
 
     def close(self):
         """Release an already drained pool without blocking the job on process teardown."""
-        ex, self.ex = self.ex, None
+        self._closed.set()
+        with self._lock:
+            ex, self.ex = self.ex, None
         if ex is not None:
             ex.shutdown(wait=False, cancel_futures=True)

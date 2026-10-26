@@ -24,7 +24,7 @@ button,input,select{font:inherit;color:inherit}
 .counter{background:var(--panel);border-right:1px solid var(--line);padding:28px 26px 120px;position:sticky;top:0;height:100vh;overflow:auto}
 @media (max-width:900px){.counter{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);padding-bottom:28px}}
 .brand{font-stretch:62%;font-weight:900;font-size:44px;line-height:.9;letter-spacing:-.5px;margin:0 0 4px}
-.brand span{color:#FF0033}
+.brand span{color:#FF2651}
 .tagline{font-size:14px;line-height:1.4;color:var(--soft);margin:10px 0 0}
 /* language flags in the header */
 .header-switches{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:-8px 0 14px}
@@ -33,10 +33,10 @@ button,input,select{font:inherit;color:inherit}
 .langs button:hover{opacity:.85;filter:none}
 .langs button[aria-pressed=true]{opacity:1;filter:none;box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--ink)}
 .langs svg{width:100%;height:100%;display:block}
-.sources button{display:grid;place-items:center;width:32px;height:26px;padding:3px;border:1px solid transparent;border-radius:4px;cursor:pointer;background:#fff;opacity:.45;transition:opacity .15s}
+.sources button{display:grid;place-items:center;width:27px;height:18px;padding:1px;border:1px solid transparent;border-radius:3px;cursor:pointer;background:#fff;opacity:.45;transition:opacity .15s}
 .sources button:hover{opacity:.85}
 .sources button[aria-pressed=true]{opacity:1;box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--ink)}
-.sources svg{display:block;width:24px;height:20px}
+.sources svg{display:block;width:21px;height:14px}
 .ask{display:block;margin:26px 0 8px;font-weight:700;font-size:17px}
 .tags{width:100%;border:2px solid var(--ink);border-radius:var(--r-sm);padding:12px 14px;font-size:18px;background:#fff}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 4px}
@@ -613,11 +613,13 @@ async function poll(){
   $("#cur").textContent = curText(s);
   $("#meter").style.width = (s.progress*100)+"%";
   if(s.log.length){ const L=$("#log"); L.textContent += s.log.join("\n")+"\n"; L.scrollTop=L.scrollHeight; logSince = s.log_total; }
-  if(s.dig){ renderDig(s.dig, s.tracks, running);
-    if(scrollToNew){ scrollToNew = false; document.querySelector(`.digsec[data-dig="${CSS.escape(s.dig)}"]`)?.scrollIntoView({behavior:"smooth"}); } }
+  try{
+    if(s.dig){ renderDig(s.dig, s.tracks, running);
+      if(scrollToNew){ scrollToNew = false; document.querySelector(`.digsec[data-dig="${CSS.escape(s.dig)}"]`)?.scrollIntoView({behavior:"smooth"}); } }
+  }catch(e){ console.error("Unable to display crate", e); }
   if(s.found_cookies) $("#cookies_browser").value = s.found_cookies;
   if(!running && !s.busy){ clearInterval(polling); polling=null; loadHistory(); if(s.status==="error" || s.note) $("#logBox").open = true;
-    if(s.dig) renderDig(s.dig, s.tracks, false); }
+  }
   else if(!running && !polling) startPolling();   // after "Stop", read the last log lines
 }
 
@@ -699,8 +701,13 @@ const rendered = {};          // uid -> loop
 const hidden = new Set();     // uids of loops removed from the screen
 const uid = l => l.dig + "/" + l.name;
 const FAV = "★favorites";     // the "Favorites" crate: collected from all crates
-function hue(cam){ const n=parseInt(cam); return `hsl(${(n-1)*30} 62% ${cam.endsWith("A")?38:46}%)`; }
+function validCamelot(cam){ return typeof cam==="string" && /^(?:[1-9]|1[0-2])[AB]$/.test(cam); }
+function hue(cam){
+  if(!validCamelot(cam)) return "var(--soft)";
+  const n=parseInt(cam); return `hsl(${(n-1)*30} 62% ${cam.endsWith("A")?38:46}%)`;
+}
 function compatible(a,b){
+  if(!validCamelot(a) || !validCamelot(b)) return false;
   const na=parseInt(a), nb=parseInt(b), la=a.slice(-1), lb=b.slice(-1);
   if(na===nb) return true;
   const d = Math.min((na-nb+12)%12, (nb-na+12)%12);
@@ -802,7 +809,7 @@ function fillLoop(el, l){              // all captions of a loop in the current 
   el.querySelector(".play").setAttribute("aria-label", t("play",{name:l.name}));
   el.querySelector(".lname").title = t("dragOut");
   el.querySelector(".copy").title = t("copyTitle");
-  el.querySelector(".meta").innerHTML = esc(kindTxt + t("meta",{bars:l.bars, bw, steps:l.steps, sw:pl(l.steps,"steps"), cam:l.camelot}))
+  el.querySelector(".meta").innerHTML = esc(kindTxt + t("meta",{bars:l.bars, bw, steps:l.steps, sw:pl(l.steps,"steps"), cam:validCamelot(l.camelot)?l.camelot:"—"}))
     + "<br>" + esc((l.free ? t("free",{bars:l.bars, bw, bpm:l.bpm}) : t("was",{bpm:l.real_bpm, st}))
     + (Math.abs(l.tuning_cents||0)>=25 ? ", " + t("tuning",{c:(l.tuning_cents>0?"+":"")+Math.round(l.tuning_cents)}) : ""))
     + (l.purity != null ? `<span class="dbgonly">, <span class="purity">${esc(t("purity",{p:Math.round(l.purity*100)}))}</span></span>` : "");
