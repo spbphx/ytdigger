@@ -1,9 +1,9 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title CrateDigger
+title YTDigger
 echo.
-echo   CrateDigger - sample digging for boom bap
+echo   YTDigger - sample digging for boom bap
 echo   ------------------------------------------
 echo.
 

@@ -5,13 +5,14 @@ Analyzer is a process pool: while the network downloads the next track, the prev
 analysed in parallel on other cores. The number of processes is cores minus one (one stays for the
 window and the player), but no more than three and no more than memory allows. The processes run at
 a lower priority and with a limited number of FFT/BLAS threads, so they don't disturb each other or
-the jam. If the processes fail to start or keep crashing, analysis runs right in the calling thread,
-as in versions before 1.2.
+the jam. If the processes fail to start or keep crashing, analysis runs in a daemon thread,
+so the pipeline watchdog can still interrupt waiting.
 """
 from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -46,8 +47,8 @@ def total_ram_gb() -> float | None:
 
 
 def worker_count(tasks: int | None = None) -> int:
-    """How many analysis processes to start (CRATEDIGGER_WORKERS=0 — no processes, single thread)."""
-    env = os.environ.get("CRATEDIGGER_WORKERS", "").strip()
+    """How many analysis processes to start (YTDIGGER_WORKERS=0 — no processes, single thread)."""
+    env = os.environ.get("YTDIGGER_WORKERS", os.environ.get("CRATEDIGGER_WORKERS", "")).strip()
     if env.isdigit():
         return int(env) if not tasks else min(int(env), max(1, tasks))
     n = max(1, min(MAX_WORKERS, (os.cpu_count() or 1) - 1))
@@ -80,7 +81,7 @@ def _ping() -> int:
 
 
 class Analyzer:
-    """Pool of analysis processes with a fallback mode "in this same thread"."""
+    """Pool of analysis processes with a fallback to a daemon thread."""
 
     def __init__(self, log, tasks: int | None = None, tmp: Path | None = None):
         self.log = log
@@ -132,7 +133,7 @@ class Analyzer:
 
     def submit(self, fn, *args) -> Future:
         """Hand a task to a process; if the pool is broken, recreate it, and after frequent crashes
-        run the task right here (as before)."""
+        run the task in a daemon thread (still subject to the pipeline watchdog)."""
         if self.ex is not None:
             try:
                 return self.ex.submit(fn, *args)
@@ -147,10 +148,16 @@ class Analyzer:
                 else:
                     self.log(T("⚠ Analysis processes keep crashing — continuing in a single thread"))
         f: Future = Future()
-        try:
-            f.set_result(fn(*args))
-        except BaseException as e:   # noqa: BLE001 — the error goes to the caller through the Future
-            f.set_exception(e)
+
+        def work():
+            if not f.set_running_or_notify_cancel():
+                return
+            try:
+                f.set_result(fn(*args))
+            except BaseException as e:   # noqa: BLE001 — the error goes to the caller through the Future
+                f.set_exception(e)
+
+        threading.Thread(target=work, daemon=True, name="analysis-fallback").start()
         return f
 
     def _drop(self):
@@ -186,7 +193,7 @@ class Analyzer:
         self._clean_tmp()                         # temporary audio of the killed analyses
 
     def close(self):
-        """Normal shutdown: wait for the processes and free their memory."""
+        """Release an already drained pool without blocking the job on process teardown."""
         ex, self.ex = self.ex, None
         if ex is not None:
-            ex.shutdown(wait=True)
+            ex.shutdown(wait=False, cancel_futures=True)

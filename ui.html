@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CrateDigger</title>
+<title>ytdigger</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..900&display=swap" rel="stylesheet">
 <style>
@@ -24,13 +24,19 @@ button,input,select{font:inherit;color:inherit}
 .counter{background:var(--panel);border-right:1px solid var(--line);padding:28px 26px 120px;position:sticky;top:0;height:100vh;overflow:auto}
 @media (max-width:900px){.counter{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);padding-bottom:28px}}
 .brand{font-stretch:62%;font-weight:900;font-size:44px;line-height:.9;letter-spacing:-.5px;margin:0 0 4px}
+.brand span{color:#FF0033}
 .tagline{font-size:14px;line-height:1.4;color:var(--soft);margin:10px 0 0}
 /* language flags in the header */
-.langs{display:flex;gap:8px;margin:-8px 0 14px}
+.header-switches{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:-8px 0 14px}
+.langs,.sources{display:flex;gap:8px}
 .langs button{width:27px;height:18px;padding:0;border:1px solid rgba(0,0,0,.18);border-radius:3px;overflow:hidden;cursor:pointer;background:#fff;opacity:.45;filter:saturate(.35);transition:opacity .15s,filter .15s}
 .langs button:hover{opacity:.85;filter:none}
 .langs button[aria-pressed=true]{opacity:1;filter:none;box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--ink)}
 .langs svg{width:100%;height:100%;display:block}
+.sources button{display:grid;place-items:center;width:32px;height:26px;padding:3px;border:1px solid transparent;border-radius:4px;cursor:pointer;background:#fff;opacity:.45;transition:opacity .15s}
+.sources button:hover{opacity:.85}
+.sources button[aria-pressed=true]{opacity:1;box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--ink)}
+.sources svg{display:block;width:24px;height:20px}
 .ask{display:block;margin:26px 0 8px;font-weight:700;font-size:17px}
 .tags{width:100%;border:2px solid var(--ink);border-radius:var(--r-sm);padding:12px 14px;font-size:18px;background:#fff}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 4px}
@@ -163,13 +169,19 @@ body.debug .icon.dbgonly{display:inline-block}
 <body>
 <div class="app">
   <aside class="counter">
+    <div class="header-switches">
     <div class="langs" role="group" aria-label="Язык / Language / Idioma">
         <button data-lang="en" title="English" aria-label="English"><svg viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><clipPath id="ukc"><path d="M0,5 v30 h60 v-30z"/></clipPath><clipPath id="ukt"><path d="M30,20 h30 v15z v15 h-30z h-30 v-15z v-15 h30z"/></clipPath><rect width="60" height="40" fill="#012169"/><g clip-path="url(#ukc)"><path d="M0,5 L60,35 M60,5 L0,35" stroke="#fff" stroke-width="6"/><path d="M0,5 L60,35 M60,5 L0,35" clip-path="url(#ukt)" stroke="#C8102E" stroke-width="4"/></g><path d="M30,0 v40 M0,20 h60" stroke="#fff" stroke-width="10"/><path d="M30,0 v40 M0,20 h60" stroke="#C8102E" stroke-width="6"/></svg></button>
         <button data-lang="ru" title="Русский" aria-label="Русский"><svg viewBox="0 0 9 6" preserveAspectRatio="none" aria-hidden="true"><rect width="9" height="2" fill="#fff"/><rect y="2" width="9" height="2" fill="#0039A6"/><rect y="4" width="9" height="2" fill="#D52B1E"/></svg></button>
         <button data-lang="es" title="Español" aria-label="Español"><svg viewBox="0 0 3 2" preserveAspectRatio="none" aria-hidden="true"><rect width="3" height="2" fill="#AA151B"/><rect y=".5" width="3" height="1" fill="#F1BF00"/></svg></button>
     </div>
-    <h1 class="brand">CrateDigger</h1>
-    <p class="tagline" data-i18n="tagline">Records from YouTube Music, chopped into tight loops</p>
+    <div class="sources" id="source" role="group" data-i18n-aria="sourceLab" aria-label="Search service" data-value="ytmusic">
+      <button type="button" data-v="ytmusic" title="YouTube Music" aria-label="YouTube Music" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#FF0033"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="#fff"/><path d="M9.5 7.5v9l7-4.5z" fill="#fff"/></svg></button>
+      <button type="button" data-v="youtube" data-i18n-title="youtubeHint" title="YouTube — more junk, podcasts and Type Beats" aria-label="YouTube" aria-pressed="false"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M27.42 3.12A3.5 3.5 0 0 0 24.94.64C22.76.06 14 .06 14 .06S5.24.06 3.06.64A3.5 3.5 0 0 0 .58 3.12C0 5.3 0 10 0 10s0 4.7.58 6.88a3.5 3.5 0 0 0 2.48 2.48c2.18.58 10.94.58 10.94.58s8.76 0 10.94-.58a3.5 3.5 0 0 0 2.48-2.48C28 14.7 28 10 28 10s0-4.7-.58-6.88z" fill="#FF0033"/><path d="m11.2 14.2 7.28-4.2-7.28-4.2z" fill="#fff"/></svg></button>
+    </div>
+    </div>
+    <h1 class="brand"><span>YT</span>Digger</h1>
+    <p class="tagline" id="tagline">Records from YouTube Music, chopped into tight loops</p>
 
     <label class="ask" for="tags" data-i18n="ask">What are we digging for?</label>
     <input id="tags" class="tags" placeholder="soul, rhodes, 1973" autocomplete="off">
@@ -257,7 +269,7 @@ let logSince = 0, polling = null, lastStatus = "idle", scrollToNew = false, last
    generated text calls t(key, {vars}); pl(n, key) picks the plural form. */
 const I18N = {
 ru: {
-  tagline:"Пластинки с YouTube Music, нарезанные в ровные лупы", ask:"Что ищем в ящике?", rare:"Искать редкие",
+  tagline:"Пластинки с {source}, нарезанные в ровные лупы", sourceLab:"Сервис для поиска", youtubeHint:"YouTube — тут попадается больше мусора, подкастов и Type Beats", ask:"Что ищем в ящике?", rare:"Искать редкие",
   tagsHint:"Оставьте пустым — будут случайные пластинки", nTracks:"Пластинок", nLoops:"Лупов с каждой",
   barsLab:"Длина лупа", bar1:"1 такт", bar2:"2 такта", bar4:"4 такта",
   preferLab:"Какие лупы искать", any:"Любые", breaks:"Брейки", melodic:"Мелодия", onlyLab:"Только:",
@@ -321,7 +333,7 @@ ru: {
   loops:["луп","лупа","лупов"], bars:["такт","такта","тактов"], steps:["шаг","шага","шагов"],
 },
 en: {
-  tagline:"Records from YouTube Music, chopped into tight loops", ask:"What are we digging for?", rare:"Look for rare ones",
+  tagline:"Records from {source}, chopped into tight loops", sourceLab:"Search service", youtubeHint:"YouTube — more junk, podcasts and Type Beats here", ask:"What are we digging for?", rare:"Look for rare ones",
   tagsHint:"Leave empty for random records", nTracks:"Records", nLoops:"Loops per record",
   barsLab:"Loop length", bar1:"1 bar", bar2:"2 bars", bar4:"4 bars",
   preferLab:"What loops to look for", any:"Any", breaks:"Breaks", melodic:"Melody", onlyLab:"Only:",
@@ -385,7 +397,7 @@ en: {
   loops:["loop","loops"], bars:["bar","bars"], steps:["step","steps"],
 },
 es: {
-  tagline:"Discos de YouTube Music cortados en loops exactos", ask:"¿Qué buscamos en la caja?", rare:"Buscar rarezas",
+  tagline:"Discos de {source} cortados en loops exactos", sourceLab:"Servicio de búsqueda", youtubeHint:"YouTube — aquí hay más basura, podcasts y Type Beats", ask:"¿Qué buscamos en la caja?", rare:"Buscar rarezas",
   tagsHint:"Déjalo vacío para discos al azar", nTracks:"Discos", nLoops:"Loops por disco",
   barsLab:"Duración del loop", bar1:"1 compás", bar2:"2 compases", bar4:"4 compases",
   preferLab:"Qué loops buscar", any:"Cualquiera", breaks:"Breaks", melodic:"Melodía", onlyLab:"Solo:",
@@ -471,6 +483,7 @@ function applyLang(){
   document.querySelectorAll("[data-i18n-title]").forEach(e=>e.title = t(e.dataset.i18nTitle));
   document.querySelectorAll("[data-i18n-aria]").forEach(e=>e.setAttribute("aria-label", t(e.dataset.i18nAria)));
   document.querySelectorAll(".langs button").forEach(b=>b.setAttribute("aria-pressed", b.dataset.lang===LANG));
+  updateSource();
   if(!dragTrack) $("#dropText").textContent = t("dropText");
   if($("#mode").dataset.value) seg("mode", $("#mode").dataset.value);
   syncOnly();
@@ -489,6 +502,20 @@ function setLang(l){
 document.querySelectorAll(".langs button").forEach(b=>b.onclick = ()=>setLang(b.dataset.lang));
 
 /* ------------ the settings form */
+function updateSource(){
+  const box = $("#source"), val = box.dataset.value;
+  box.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", b.dataset.v===val));
+  $("#tagline").textContent = t("tagline", {source:val==="youtube" ? "YouTube" : "YouTube Music"});
+}
+function setSource(val){
+  $("#source").dataset.value = val==="youtube" ? "youtube" : "ytmusic";
+  updateSource();
+}
+$("#source").querySelectorAll("button").forEach(b=>b.onclick = async ()=>{
+  setSource(b.dataset.v);
+  const r = await api("/api/settings", {source:$("#source").dataset.value});
+  if(r.error) toast(r.error);
+});
 const KINDS = ["drums","bass","vocal","pads"];
 const kindName = k => t("k_"+k);
 const onlySel = new Set();      // "Only ..." — several can be selected, they work as OR
@@ -530,7 +557,7 @@ CHIPS.forEach(c=>{const b=document.createElement("button");b.className="chip";b.
 
 function params(){
   const v = id=>$("#"+id).value;
-  return {tags:v("tags"), n_tracks:+v("n_tracks"), n_loops:+v("n_loops"), bars:+$("#bars").dataset.value,
+  return {tags:v("tags"), source:$("#source").dataset.value, n_tracks:+v("n_tracks"), n_loops:+v("n_loops"), bars:+$("#bars").dataset.value,
     prefer:$("#prefer").dataset.value, only:onlyList(), mode:$("#mode").dataset.value, y0:+v("y0"), y1:+v("y1"),
     bpm_min:+v("bpm_min"), bpm_max:+v("bpm_max"), formats:v("formats"),
     save_mp3:$("#save_mp3").checked, chops:$("#chops").checked, normalize:$("#normalize").checked,
@@ -539,6 +566,7 @@ function params(){
     year_filter:$("#year_filter").checked, bpm_filter:$("#bpm_filter").checked};
 }
 function fill(p){
+  setSource(p.source);
   for(const k of ["tags","n_tracks","n_loops","y0","y1","bpm_min","bpm_max","formats","title_len","cookies_browser"]) if(p[k]!==undefined) $("#"+k).value=p[k];
   for(const k of ["save_mp3","chops","normalize","strict_year","rare","sort_ms","year_filter","bpm_filter"]) if(p[k]!==undefined) $("#"+k).checked=!!p[k];
   syncFilters();
@@ -1003,7 +1031,7 @@ $("#zipBtn").onclick = async ()=>{
     const r = await fetch("/api/zip",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({items})});
     if(!r.ok){ const e = await r.json().catch(()=>({})); toast(e.error||t("zipFail")); return; }
     const blob = await r.blob();
-    const name = (/filename="([^"]+)"/.exec(r.headers.get("Content-Disposition")||"")||[])[1] || "CrateDigger_ModelSamples.zip";
+    const name = (/filename="([^"]+)"/.exec(r.headers.get("Content-Disposition")||"")||[])[1] || "YTDigger_ModelSamples.zip";
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 60000);
     const miss = +(r.headers.get("X-Missing")||0), got = +(r.headers.get("X-Loops")||0);

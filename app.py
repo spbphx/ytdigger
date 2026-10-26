@@ -1,5 +1,5 @@
 """
-CrateDigger — sample digging for boom bap.
+YTDigger — sample digging for boom bap.
 Starts a local web server and opens the interface in a browser window.
 
 The server is a small JSON API over http.server (no frameworks): the page ui.html polls
@@ -36,14 +36,16 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 FAV_DIR = "Favorites"          # copies of favourite loops on disk
 FEEDBACK_DIR = "Feedback"      # Debugging mode: loops marked "wrong match" with the analyzer's readings
 FAV_KEY = "★favorites"         # the Favorites "crate" on screen: collected from all crates
-VERSION = "1.3.3"
+VERSION = "1.4"
 
 
 def default_out_dir() -> Path:
-    """Music/CrateDigger in the home folder (or ~/CrateDigger if there is no Music folder)."""
+    """Music/YTDigger in the home folder (or ~/YTDigger if there is no Music folder)."""
     home = Path.home()
     music = home / "Music"
-    return (music if music.exists() else home) / "CrateDigger"
+    base = music if music.exists() else home
+    legacy = base / "CrateDigger"
+    return legacy if legacy.exists() else base / "YTDigger"
 
 
 def load_settings() -> dict:
@@ -462,7 +464,7 @@ def update_loop_meta(dig: str, name: str, **changes):
 
 class Handler(BaseHTTPRequestHandler):
     """HTTP handler: the page, the JSON API and loop files."""
-    server_version = "CrateDigger"
+    server_version = "YTDigger"
 
     def log_message(self, *a):
         pass
@@ -543,7 +545,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 return self._file(APP_DIR / "ui.html", "text/html; charset=utf-8")
             if u.path == "/api/ping":
-                return self._json({"app": "cratedigger"})
+                return self._json({"app": "ytdigger"})
             if u.path == "/api/state":
                 since = int((q.get("since") or ["0"])[0])
                 snap = STATE.snapshot(since)
@@ -632,6 +634,9 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.request_stop()                 # also kills the analysis processes at once
                 return self._json({"ok": True})
             if u.path == "/api/settings":
+                if b.get("source") in ("ytmusic", "youtube"):
+                    SETTINGS.setdefault("last", {})["source"] = b["source"]
+                    save_settings(SETTINGS)
                 if "debug" in b:                       # "Debugging" checkbox in More settings
                     SETTINGS["debug"] = bool(b["debug"])
                     save_settings(SETTINGS)
@@ -703,7 +708,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/zip")
                 self.send_header("Content-Length", str(size))
-                self.send_header("Content-Disposition", f'attachment; filename="CrateDigger_ModelSamples_{stamp}.zip"')
+                self.send_header("Content-Disposition", f'attachment; filename="YTDigger_ModelSamples_{stamp}.zip"')
                 self.send_header("X-Loops", str(added))
                 self.send_header("X-Missing", str(missing))
                 self.end_headers()
@@ -750,11 +755,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def find_port(start=8765):
-    """A free local port (or the port of an already running CrateDigger). -> (port, already_running)"""
+    """A free local port (or the port of an already running YTDigger). -> (port, already_running)"""
     for port in range(start, start + 30):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=0.4) as r:
-                if json.loads(r.read()).get("app") == "cratedigger":
+                if json.loads(r.read()).get("app") in ("ytdigger", "cratedigger"):
                     return port, True
         except Exception:
             pass
@@ -801,12 +806,12 @@ def main():
     port, running = find_port()
     url = f"http://127.0.0.1:{port}/"
     if running:
-        print(T("CrateDigger is already running — opening the window."))
+        print(T("YTDigger is already running — opening the window."))
         open_window(url)
         return
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print("=" * 56)
-    print(T("  CrateDigger {v} is running:  {url}", v=VERSION, url=url))
+    print(T("  YTDigger {v} is running:  {url}", v=VERSION, url=url))
     print(T("  Loops are saved to: {d}", d=out_root()))
     print(T("  Keep this window open while digging."))
     print("=" * 56)

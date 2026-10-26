@@ -90,12 +90,12 @@ S: dict[str, tuple[str, str]] = {
     "no free port": (
         "нет свободного порта",
         "no hay ningún puerto libre"),
-    "CrateDigger is already running — opening the window.": (
-        "CrateDigger уже запущен — открываю окно.",
-        "CrateDigger ya está abierto: abro la ventana."),
-    "  CrateDigger {v} is running:  {url}": (
-        "  CrateDigger {v} работает:  {url}",
-        "  CrateDigger {v} está funcionando:  {url}"),
+    "YTDigger is already running — opening the window.": (
+        "YTDigger уже запущен — открываю окно.",
+        "YTDigger ya está abierto: abro la ventana."),
+    "  YTDigger {v} is running:  {url}": (
+        "  YTDigger {v} работает:  {url}",
+        "  YTDigger {v} está funcionando:  {url}"),
     "  Loops are saved to: {d}": (
         "  Лупы сохраняются в: {d}",
         "  Los loops se guardan en: {d}"),
@@ -177,6 +177,21 @@ S: dict[str, tuple[str, str]] = {
         "ffmpeg не найден (pip install imageio-ffmpeg)",
         "no se encontró ffmpeg (pip install imageio-ffmpeg)"),
     # ---- core.py: crate and pipeline
+    "🔎 Source: {source}": (
+        "🔎 Источник: {source}",
+        "🔎 Fuente: {source}"),
+    "⚠ Temporary file not removed: {e}": (
+        "⚠ Не удалось удалить временный файл: {e}",
+        "⚠ No se pudo borrar el archivo temporal: {e}"),
+    "The saving thread stopped unexpectedly. Try digging again.": (
+        "Поток сохранения неожиданно остановился. Попробуйте запустить копание снова.",
+        "El proceso de guardado se detuvo inesperadamente. Vuelve a excavar."),
+    "Analysis or saving timed out. Try fewer records or restart the program.": (
+        "Превышено время ожидания анализа или сохранения. Уменьшите число пластинок или перезапустите программу.",
+        "El análisis o el guardado tardó demasiado. Prueba con menos discos o reinicia el programa."),
+    "The saving thread did not finish. Restart the program before digging again.": (
+        "Поток сохранения не завершился. Перезапустите программу перед новым копанием.",
+        "El proceso de guardado no terminó. Reinicia el programa antes de volver a excavar."),
     "📦 New crate: {name}": (
         "📦 Новый ящик: {name}",
         "📦 Caja nueva: {name}"),
@@ -289,9 +304,9 @@ S: dict[str, tuple[str, str]] = {
         "С этими настройками лупы не нашлись — подробности в журнале",
         "No se encontraron loops con estos ajustes: detalles en el registro"),
     # ---- credits.txt / MODEL_SAMPLES.txt
-    "CrateDigger — where the loops come from (useful for sample clearance)": (
-        "CrateDigger — откуда взяты лупы (пригодится для клиринга семплов)",
-        "CrateDigger — de dónde salen los loops (útil para licenciar samples)"),
+    "YTDigger — where the loops come from (useful for sample clearance)": (
+        "YTDigger — откуда взяты лупы (пригодится для клиринга семплов)",
+        "YTDigger — de dónde salen los loops (útil para licenciar samples)"),
     "original tempo {bpm}, stretch {pct:+.1f}%": (
         "исходный темп {bpm}, растяжение {pct:+.1f}%",
         "tempo original {bpm}, estiramiento {pct:+.1f}%"),

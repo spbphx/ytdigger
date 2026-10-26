@@ -1,8 +1,8 @@
 #!/bin/bash
-# CrateDigger — запуск на macOS (двойной клик; в первый раз: правый клик → Открыть)
+# YTDigger — запуск на macOS (двойной клик; в первый раз: правый клик → Открыть)
 cd "$(dirname "$0")" || exit 1
 echo ""
-echo "  CrateDigger — копание семплов для бум-бэпа"
+echo "  YTDigger — копание семплов для бум-бэпа"
 echo ""
 
 if [ ! -x ".venv/bin/python" ]; then

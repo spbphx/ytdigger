@@ -25,7 +25,8 @@ from collections import Counter
 
 from . import dsp, i18n, iso, workers
 from .i18n import P, T, set_lang
-from .sources import BotBlocked, Fetcher, Stopped, basic_filter, build_query, era_check, explain_error, human_count
+from .sources import (SOURCES, BotBlocked, Fetcher, Stopped, basic_filter, build_query,
+                      era_check, explain_error, human_count, video_url)
 
 APP_DIR = Path(__file__).resolve().parent.parent
 
@@ -157,7 +158,7 @@ class History:
 
 
 # --------------------------------------------------------------------------- digging
-DEFAULTS = dict(tags="", n_tracks=5, n_loops=3, bars=2, prefer="any", mode="stretch",
+DEFAULTS = dict(tags="", source="ytmusic", n_tracks=5, n_loops=3, bars=2, prefer="any", mode="stretch",
                 bpm_min=60, bpm_max=120, y0=1960, y1=1999, strict_year=False,
                 year_filter=False, bpm_filter=False,
                 save_mp3=True, formats="stereo", chops=False, normalize=True, title_len=20,
@@ -175,6 +176,7 @@ def normalize_params(p: dict) -> dict:
     """Settings from the interface -> a complete, validated dict (unknown or broken values fall back to defaults)."""
     q = dict(DEFAULTS)
     q.update({k: v for k, v in (p or {}).items() if k in DEFAULTS})
+    q["source"] = q["source"] if q["source"] in ("ytmusic", "youtube") else "ytmusic"
     q["n_tracks"] = _int(q["n_tracks"], 1, 20, 5)
     q["n_loops"] = _int(q["n_loops"], 1, 8, 3)
     q["bars"] = q["bars"] if q["bars"] in (1, 2, 4, "1", "2", "4") else 2
@@ -475,6 +477,11 @@ class Pipeline:
     written only by this process — in one writer thread, one at a time (no races for names and
     dig.json). Meanwhile the network downloads the next track."""
 
+    TASK_TIMEOUT = 600.0       # analysis + saving, per track (also checked while the producer waits)
+    FINISH_TIMEOUT = 600.0     # always bound final draining, even without Stop
+    STOP_TIMEOUT = 5.0
+    SAVER_JOIN_TIMEOUT = 10.0
+
     def __init__(self, sess: "Session", state: JobState, total: int, lenient: bool = False, on_accept=None):
         self.sess, self.state, self.p = sess, state, sess.p
         self.total, self.lenient, self.on_accept = total, lenient, on_accept
@@ -484,10 +491,12 @@ class Pipeline:
             self.log(T("⚙ Analysing in {n} parallel processes", n=self.pool.n))
         self.cv = threading.Condition()
         self.pending: dict[int, str] = {}         # sent to analysis, not written yet: number -> title
+        self._started: dict[int, float] = {}
+        self._closed = threading.Event()
         self.accepted = 0
         self.net = ""                             # what the network is doing right now (for the status line)
         self._n = 0
-        self.q: queue.Queue = queue.Queue()
+        self.q: queue.Queue = queue.Queue(maxsize=self.slots + 1)  # one extra slot for the shutdown sentinel
         self.saver = threading.Thread(target=self._save_loop, daemon=True, name="saver")
         self.saver.start()
         state.stop_hooks.append(self.pool.kill)  # "Stop" — at once, even if the network is busy downloading
@@ -503,15 +512,57 @@ class Pipeline:
 
     def submit(self, path, track: dict, cleanup: bool = True):
         """Hand a downloaded track to analysis. cleanup — delete the file when it is no longer needed."""
+        # Local imports also use backpressure; finished results can contain large audio arrays.
+        while self.counts()[1] >= self.slots and not self.state.stop:
+            self.wait()
+        if self.state.stop or self._closed.is_set():
+            if cleanup:
+                self._cleanup(Path(path))
+            return
+        self._check_health()
         label = f"{track['artist']} — {track['title']}"
         with self.cv:
             self._n += 1
             key = self._n
             self.pending[key] = label
-        self.status()
-        p = dict(self.p, lang=i18n.LANG)              # language of messages — the current interface language
-        fut = self.pool.submit(cut_track, str(path), p, self.sess.common_bpm(), self.lenient, self.pool.tmp)
-        fut.add_done_callback(lambda f: self.q.put((key, f, Path(path), track, label, cleanup)))
+            self._started[key] = time.monotonic()
+        try:
+            self.status()
+            p = dict(self.p, lang=i18n.LANG)              # language of messages — the current interface language
+            fut = self.pool.submit(cut_track, str(path), p, self.sess.common_bpm(), self.lenient, self.pool.tmp)
+        except BaseException:
+            with self.cv:
+                self.pending.pop(key, None)
+                self._started.pop(key, None)
+                self.cv.notify_all()
+            if cleanup:
+                self._cleanup(Path(path))
+            raise
+
+        def done(f):
+            with self.cv:
+                if not self._closed.is_set():
+                    self.q.put_nowait((key, f, Path(path), track, label, cleanup))
+                    return
+            if cleanup:
+                self._cleanup(Path(path))
+
+        fut.add_done_callback(done)
+
+    def _cleanup(self, path: Path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            self.log(T("⚠ Temporary file not removed: {e}", e=str(e)[:200]))
+
+    def _check_health(self):
+        """Fail the job instead of waiting forever for a dead saver or stuck analysis."""
+        if not self.saver.is_alive():
+            raise RuntimeError(T("The saving thread stopped unexpectedly. Try digging again."))
+        with self.cv:
+            expired = any(time.monotonic() - started >= self.TASK_TIMEOUT for started in self._started.values())
+        if expired:
+            raise RuntimeError(T("Analysis or saving timed out. Try fewer records or restart the program."))
 
     def _save_loop(self):
         """Writer thread: takes finished analyses from the queue and saves them one at a time."""
@@ -521,17 +572,24 @@ class Pipeline:
                 return
             key, fut, path, track, label, cleanup = item
             try:
-                self._handle(fut, path, track, label)
+                if not self._closed.is_set():
+                    self._handle(fut, path, track, label)
             except Exception as e:
                 self.log(T("✕ {label}: not saved ({e})", label=label, e=str(e)[:200]))
                 traceback.print_exc()
             finally:
-                if cleanup:
-                    path.unlink(missing_ok=True)
-                with self.cv:
-                    self.pending.pop(key, None)
-                    self.cv.notify_all()
-                self.status()
+                try:
+                    if cleanup:
+                        self._cleanup(path)
+                finally:
+                    with self.cv:
+                        self.pending.pop(key, None)
+                        self._started.pop(key, None)
+                        self.cv.notify_all()
+                try:
+                    self.status()
+                except Exception:
+                    traceback.print_exc()
 
     def _handle(self, fut, path: Path, track: dict, label: str):
         """Log the result of one analysis and save its loops if the track fits."""
@@ -561,6 +619,8 @@ class Pipeline:
             self.on_accept(track)
 
     def wait(self, timeout: float = 0.5):
+        if not self.state.stop:
+            self._check_health()
         with self.cv:
             self.cv.wait(timeout)
 
@@ -579,30 +639,49 @@ class Pipeline:
             self.state.progress = min(0.999, (acc + 0.5 * busy) / max(1, self.total))
 
     def finish(self):
-        """Wait for the started analyses (on "Stop" — abandon them) and close the processes."""
-        self.status(net="")
-        deadline = None
-        while True:
-            if self.state.stop:
-                self.pool.kill()
-                deadline = deadline or time.time() + 5     # let the killed tasks report back
+        """Drain with a watchdog, then shut down without an unbounded executor wait."""
+        failed = True
+        deadline = time.monotonic() + self.FINISH_TIMEOUT
+        stopped = False
+        try:
+            self.status(net="")
+            while True:
+                if self.state.stop and not stopped:
+                    stopped = True
+                    self.pool.kill()
+                    deadline = min(deadline, time.monotonic() + self.STOP_TIMEOUT)
+                with self.cv:
+                    if not self.pending:
+                        break
+                if time.monotonic() >= deadline:
+                    if stopped:
+                        break
+                    raise RuntimeError(T("Analysis or saving timed out. Try fewer records or restart the program."))
+                self.wait(0.3)
+            failed = False
+        finally:
+            # Late callbacks release their source files instead of filling an abandoned queue.
             with self.cv:
-                if not self.pending or (deadline and time.time() > deadline):
-                    break
-                self.cv.wait(0.3)
-        self.q.put(None)
-        self.saver.join(timeout=10)
-        if self.pool.kill in self.state.stop_hooks:
-            self.state.stop_hooks.remove(self.pool.kill)
-        if not self.state.stop:
-            self.pool.close()
+                self._closed.set()
+            if failed or self.state.stop:
+                self.pool.kill()
+            else:
+                self.pool.close()
+            self.q.put_nowait(None)
+            self.saver.join(timeout=self.SAVER_JOIN_TIMEOUT)
+            if self.pool.kill in self.state.stop_hooks:
+                self.state.stop_hooks.remove(self.pool.kill)
+        if self.saver.is_alive():
+            # Do not race Session.finish against a writer still inside save().
+            raise RuntimeError(T("The saving thread did not finish. Restart the program before digging again."))
 
 
 def run_dig(params: dict, root: Path, state: JobState):
-    """Dig on YouTube Music: the network strictly one request at a time in this thread, analysis in processes."""
+    """Dig on the selected service: sequential network requests and parallel analysis."""
     p = normalize_params(params)
     sess = Session(root, state, p, p["tags"])
     log = state.log
+    log(T("🔎 Source: {source}", source=SOURCES[p["source"]]))
     log(T("🎛 Tags: {tags}; {years}; {bpm}; {n} records × {k} loops, {bars} bar(s)",
           tags=p["tags"] or T("none, random records"),
           years=T("years {a}–{b}", a=p["y0"], b=p["y1"]) if p["year_filter"] else T("any years"),
@@ -612,7 +691,7 @@ def run_dig(params: dict, root: Path, state: JobState):
     rng = random.Random()
     try:
         fetcher = Fetcher(root / ".tmp", log, p["cookies_browser"], cookie_file=APP_DIR / "cookies.txt",
-                          stop=lambda: state.stop)
+                          stop=lambda: state.stop, source=p["source"])
     except ImportError:
         raise RuntimeError(T("yt-dlp is not installed. Launch the program with the start file — it "
                              "installs everything."))
@@ -725,7 +804,8 @@ def run_dig(params: dict, root: Path, state: JobState):
                     continue
                 track = dict(id=cand["id"], title=title, artist=artist,
                              album=info.get("album") or cand.get("album") or "", year=year,
-                             url=f"https://music.youtube.com/watch?v={cand['id']}", query=cand.get("query", ""),
+                             url=video_url(cand["id"], p["source"]),
+                             source=p["source"], query=cand.get("query", ""),
                              thumb=info.get("thumbnail") or "", views=views)
                 pipe.submit(path, track)                # the pipeline deletes the file after analysis
                 path = None
@@ -754,7 +834,8 @@ def run_dig(params: dict, root: Path, state: JobState):
                         state.found_cookies = fetcher.found_browser
     except Stopped:                         # "Stop" during a search — don't wait for the answer
         log(T("⏹ Stopped"))
-    pipe.finish()
+    finally:
+        pipe.finish()
     return sess.finish(pipe.accepted)
 
 
@@ -763,17 +844,19 @@ def run_local(files: list[tuple[Path, str]], params: dict, root: Path, state: Jo
     p = normalize_params(params)
     sess = Session(root, state, p, "my-files")
     pipe = Pipeline(sess, state, len(files), lenient=True)
-    for i, (path, orig) in enumerate(files):
-        if state.stop:
-            Path(path).unlink(missing_ok=True)
-            continue
-        stem = Path(orig).stem
-        artist, title = (stem.split(" - ", 1) if " - " in stem else ("", stem))
-        track = dict(id=f"local-{i}-{slug(stem, 30)}", title=title.strip() or stem, artist=artist.strip() or T("My "
-                                                                                                               "file"),
-                     album="", year=None, url="", query="", thumb="", local=True)
-        pipe.submit(path, track)
-    pipe.finish()
+    try:
+        for i, (path, orig) in enumerate(files):
+            if state.stop:
+                Path(path).unlink(missing_ok=True)
+                continue
+            stem = Path(orig).stem
+            artist, title = (stem.split(" - ", 1) if " - " in stem else ("", stem))
+            track = dict(id=f"local-{i}-{slug(stem, 30)}", title=title.strip() or stem,
+                         artist=artist.strip() or T("My file"),
+                         album="", year=None, url="", query="", thumb="", local=True)
+            pipe.submit(path, track)
+    finally:
+        pipe.finish()
     if state.stop:
         state.log(T("⏹ Stopped"))
     return sess.finish(pipe.accepted)
@@ -793,8 +876,10 @@ def find_source(dig_dir: Path, track: dict) -> Path | None:
 
 def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobState):
     """Re-run an already found record with new settings (pitching/stretching, loop type and length...)."""
-    p = normalize_params(params)
-    track = {k: old.get(k) for k in ("id", "title", "artist", "album", "year", "url", "query", "thumb", "views")}
+    source = old.get("source") or ("ytmusic" if "music.youtube.com/" in (old.get("url") or "") else "youtube")
+    p = normalize_params(dict(params or {}, source=source))
+    track = {k: old.get(k) for k in ("id", "title", "artist", "album", "year", "url", "query", "thumb", "views", "source")}
+    track["source"] = p["source"]
     if old.get("local"):
         track["local"] = True
     label = f"{track['artist']} — {track['title']}"
@@ -811,7 +896,7 @@ def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobStat
             log(T("   the source isn't in the crate folder — downloading again"))
             pipe.status(net=T("Downloading: {label}", label=label))
             fetcher = Fetcher(root / ".tmp", log, p["cookies_browser"], cookie_file=APP_DIR / "cookies.txt",
-                              stop=lambda: state.stop)
+                              stop=lambda: state.stop, source=p["source"])
             src, downloaded = fetcher.download({"id": old["id"]}), True
             if fetcher.found_browser:
                 with state.lock:
@@ -833,7 +918,7 @@ def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobStat
 def write_meta(dig_dir: Path, meta: dict):
     """Write dig.json, credits.txt and MODEL_SAMPLES.txt of the crate."""
     (dig_dir / "dig.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), "utf8")
-    lines = [T("CrateDigger — where the loops come from (useful for sample clearance)"), ""]
+    lines = [T("YTDigger — where the loops come from (useful for sample clearance)"), ""]
     for t in meta["tracks"]:
         lines.append(f"{t['artist']} — {t['title']}" + (f" ({t['year']})" if t.get("year") else ""))
         lines.append(f"  {t['url']}")

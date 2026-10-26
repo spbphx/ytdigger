@@ -1,5 +1,5 @@
 """
-Searching YouTube Music for records and downloading their audio.
+Searching YouTube Music or YouTube for records and downloading their audio.
 ytmusicapi -> search (with fallbacks through yt-dlp), yt-dlp -> download.
 
 All network requests go strictly one at a time with random pauses between them (PAUSE), so the
@@ -58,7 +58,13 @@ ONLY_HINTS = {          # words added to the query for "Only ..." (with several 
     "pads": ["ambient", "ambient intro", "atmospheric", "library ambient", "strings intro", "new age", "breakdown"],
 }
 PAUSE = (0.4, 1.2)       # random pause between requests to YouTube, seconds
+SOURCES = {"ytmusic": "YouTube Music", "youtube": "YouTube"}
 RARE_HINTS = ["rare", "obscure", "private press", "deep", "unknown", "lost", "library", "promo"]
+
+
+def video_url(vid: str, source: str = "ytmusic") -> str:
+    host = "www.youtube.com" if source == "youtube" else "music.youtube.com"
+    return f"https://{host}/watch?v={vid}"
 
 
 def _extra(rng, only, rare) -> list[str]:
@@ -225,8 +231,9 @@ class Fetcher:
     """Everything that talks to YouTube: search, probing a track's metadata, downloading audio.
     One instance per dig; requests are paced (_pace) and interruptible (_run + stop)."""
     def __init__(self, tmp_dir: Path, log, cookies_browser: str | None = None, cookie_file: Path | None = None,
-                 stop=None):
+                 stop=None, source: str = "ytmusic"):
         import yt_dlp  # noqa: F401  (check that it is installed)
+        self.source = source if source in ("ytmusic", "youtube") else "ytmusic"
         self.stop = stop or (lambda: False)   # has "Stop" been pressed?
         self.tmp = Path(tmp_dir)
         self.tmp.mkdir(parents=True, exist_ok=True)
@@ -308,7 +315,7 @@ class Fetcher:
 
     # ------------------------------------------------------------- search
     def search(self, query: str, limit: int = 40) -> list[dict]:
-        """Search YouTube Music for songs. -> [dict(id, title, artist, album, duration, year, views)]"""
+        """Search the selected service. -> [dict(id, title, artist, album, duration, year, views)]"""
         self._pace()
         try:
             return self._run(lambda: self._search(query, limit))
@@ -318,7 +325,9 @@ class Fetcher:
     def _search(self, query: str, limit: int) -> list[dict]:
         """Try the search methods one by one until one returns results."""
         errors = []
-        for fn in (self._search_ytmusicapi, self._search_ytdlp_music, self._search_ytdlp_plain):
+        methods = ((self._search_youtube,) if self.source == "youtube" else
+                   (self._search_ytmusicapi, self._search_ytdlp_music, self._search_ytdlp_plain))
+        for fn in methods:
             try:
                 res = fn(query, limit)
                 if res:
@@ -375,7 +384,14 @@ class Fetcher:
         return res
 
     def _search_ytdlp_plain(self, query, limit):
-        res = self._flat(f"ytsearch{min(limit, 30)}:{query} official audio", limit)
+        res = self._search_youtube(query + " official audio", min(limit, 30))
+        for r in res:
+            r["query"] = query
+        return res
+
+    def _search_youtube(self, query, limit):
+        """Search all YouTube videos, without restricting results to official audio."""
+        res = self._flat(f"ytsearch{limit}:{query}", limit)
         for r in res:
             r["query"] = query
         return res
@@ -470,13 +486,13 @@ class Fetcher:
 
     def _probe(self, cand: dict) -> dict:
         import yt_dlp
-        url = f"https://music.youtube.com/watch?v={cand['id']}"
+        url = video_url(cand["id"], self.source)
         with yt_dlp.YoutubeDL(self._opts()) as y:
             return y.extract_info(url, download=False)
 
     def _download(self, cand: dict, info: dict | None = None) -> Path:
         import yt_dlp
-        url = f"https://music.youtube.com/watch?v={cand['id']}"
+        url = video_url(cand["id"], self.source)
         for f in self.tmp.glob(f"{cand['id']}.*"):
             try:
                 f.unlink()

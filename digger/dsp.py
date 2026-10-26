@@ -1,5 +1,5 @@
 """
-Sound engine of CrateDigger: only numpy + scipy + ffmpeg.
+Sound engine of YTDigger: only numpy + scipy + ffmpeg.
 
 What it does:
   * decodes any audio file through ffmpeg
