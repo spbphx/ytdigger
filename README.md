@@ -1,6 +1,6 @@
-# CrateDigger
+# YTDigger
 
-**Sample digging for boom bap.** CrateDigger searches YouTube Music for old records (1960–1999 by default, by your tags or at random), downloads them, finds the steadiest parts and cuts them into tight, seamless loops — ready for a DAW or an Elektron Model:Samples.
+**Sample digging for boom bap.** YTDigger searches YouTube Music for old records (1960–1999 by default, by your tags or at random), downloads them, finds the steadiest parts and cuts them into tight, seamless loops — ready for a DAW or an Elektron Model:Samples.
 
 Full manual: [English](README_EN.txt) · [Русский](README.txt) · [Español](README_ES.txt)
 
@@ -31,7 +31,7 @@ You don't need to install anything by hand — the start file sets up Python and
    - **Linux:** `bash START_LINUX.sh`
 3. The program opens in your browser at `http://127.0.0.1:8765`. Keep the black console window open while digging.
 
-Requirements: Windows 10/11, macOS or Linux; Python 3.10+ (installed automatically on Windows). The loops are saved to `Music/CrateDigger`.
+Requirements: Windows 10/11, macOS or Linux; Python 3.10+ (installed automatically on Windows). The loops are saved to `Music/YTDigger`.
 
 ## How it's built
 
