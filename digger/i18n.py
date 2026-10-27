@@ -180,6 +180,9 @@ S: dict[str, tuple[str, str]] = {
         "ffmpeg не найден (pip install imageio-ffmpeg)",
         "no se encontró ffmpeg (pip install imageio-ffmpeg)"),
     # ---- core.py: crate and pipeline
+    "🔎 No new suitable records for the exact query — trying extra search hints.": (
+        "🔎 По точному запросу больше нет новых подходящих записей — пробую добавочные теги.",
+        "🔎 La búsqueda exacta no ofrece más discos adecuados: probando términos adicionales."),
     "🔎 Source: {source}": (
         "🔎 Источник: {source}",
         "🔎 Fuente: {source}"),

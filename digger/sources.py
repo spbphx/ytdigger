@@ -38,11 +38,12 @@ CRATE = [
 FLAVOR = ["", "", "", "rare", "obscure", "instrumental", "groove", "breaks", "deep", "original"]
 
 BAD = re.compile(
-    r"type beat|lo-?fi|\bremix|slowed|sped up|nightcore|\b8d\b|karaoke|tutorial|reaction|sample pack|"
+    r"lo-?fi|\bremix|slowed|sped up|nightcore|\b8d\b|karaoke|tutorial|reaction|sample pack|"
     r"bass boosted|\b1 hour|full album|playlist|\bmix 20\d\d|ai cover|drumless|backing track|"
     r"\bfree beat|\bbeat tape|\bmashup",
     re.I,
 )
+TYPE_BEAT = re.compile(r"type beat", re.I)
 REISSUE = re.compile(r"remaster|reissue|anniversary|deluxe|expanded|collection|best of|greatest|"
                      r"anthology|classics|essential|original|vintage|rare|compilation|hits|story|years",
                      re.I)
@@ -78,11 +79,30 @@ def _extra(rng, only, rare) -> list[str]:
     return extra
 
 
-def build_query(tags: str, y0: int | None, y1: int | None, rng: random.Random, only=(), rare=False) -> str:
+def build_query(tags: str, y0: int | None, y1: int | None, rng: random.Random, only=(), rare=False,
+                expand=False, exclude=()) -> str | None:
     """A search query from the user's tags (or a random genre of the crate) plus, sometimes, a year
-    or decade and extra words. y0/y1 = None — years are not filtered and not added to the query.
+    or decade and extra words. Three or more user words start unchanged; expand enables
+    nonempty fallback hints after exhaustion, excluding queries with no fresh candidates.
+    y0/y1 = None — years are not filtered and not added to the query.
     only — the selected "Only ..." types."""
     tags = (tags or "").strip()
+    if len(tags.split()) >= 3:
+        if not expand:
+            return tags
+        hints = [hint for hint in FLAVOR if hint]
+        if y0 is None or y1 is None:
+            hints.extend(["b-side", "album track", "deep cut", "session"])
+        elif not DECADE_RX.search(tags):
+            hints.extend(str(year) for year in range(y0, y1 + 1))
+            hints.extend(f"{decade}s" for decade in sorted({year // 10 * 10 for year in range(y0, y1 + 1)}))
+        for kind in only:
+            hints.extend(ONLY_HINTS[kind])
+        if rare:
+            hints.extend(RARE_HINTS)
+        variants = [f"{tags} {hint}" for hint in dict.fromkeys(hints)]
+        variants = [query for query in variants if query not in exclude]
+        return rng.choice(variants) if variants else None
     if y0 is None or y1 is None:
         extra = _extra(rng, only, rare)
         base = tags or rng.choice(CRATE)
@@ -622,12 +642,12 @@ def era_check(cand: dict, info: dict, y0: int, y1: int, strict: bool):
     return True, None, T("year unknown")
 
 
-def basic_filter(cand: dict, min_s=95, max_s=600) -> str | None:
-    """Quick rejection by title and length (remixes, lo-fi, type beats, hour-long mixes). -> reason or None"""
+def basic_filter(cand: dict, min_s=95, max_s=600, *, source="ytmusic") -> str | None:
+    """Quick rejection by title/length; type beats are allowed on YouTube. -> reason or None"""
     if is_stream(cand):
         return T("live stream or broadcast — skipping")
     t = f"{cand.get('title', '')} {cand.get('album', '')} {cand.get('artist', '')}"
-    if BAD.search(t):
+    if BAD.search(t) or (source != "youtube" and TYPE_BEAT.search(t)):
         return T("not it (remix/lo-fi/beat)")
     d = cand.get("duration")
     if d and (d < min_s or d > max_s):

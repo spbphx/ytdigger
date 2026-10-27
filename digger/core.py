@@ -779,6 +779,9 @@ def run_dig(params: dict, root: Path, state: JobState):
     pool: list[dict] = []
     tried: set[str] = set()
     attempts = queries = empty_streak = 0
+    long_query = len(p["tags"].split()) >= 3
+    expand_query = False
+    exhausted_queries: set[str] = set()
     max_attempts, max_queries = n * 12, n * 10
     if p["only"]:                         # isolated parts are rare — dig deeper
         max_attempts, max_queries = n * 25, n * 20
@@ -818,7 +821,11 @@ def run_dig(params: dict, root: Path, state: JobState):
                     log(T("😕 The search finds nothing more. Try other tags."))
                     break
                 yr = (p["y0"], p["y1"]) if p["year_filter"] else (None, None)
-                q = build_query(p["tags"], *yr, rng, only=p["only"], rare=p["rare"])
+                q = build_query(p["tags"], *yr, rng, only=p["only"], rare=p["rare"],
+                                expand=expand_query, exclude=exhausted_queries)
+                if q is None:
+                    log(T("😕 The search finds nothing more. Try other tags."))
+                    break
                 queries += 1
                 pipe.status(net=T("Searching: “{q}”", q=q))
                 res = fetcher.search(q)
@@ -826,13 +833,18 @@ def run_dig(params: dict, root: Path, state: JobState):
                 batch_ids = set()
                 for r in res:
                     vid = r["id"]
-                    if vid in batch_ids or vid in tried or vid in hist.seen or basic_filter(r):
+                    if vid in batch_ids or vid in tried or vid in hist.seen or basic_filter(r, source=p["source"]):
                         continue
                     batch_ids.add(vid)        # one search response can repeat the same video
                     fresh.append(r)
                 log(T("🔎 “{q}”: found {n}, new suitable {k}", q=q, n=len(res), k=len(fresh)))
                 if not fresh:
                     empty_streak += 1
+                    if long_query:
+                        exhausted_queries.add(q)
+                        if not expand_query:
+                            expand_query = True
+                            log(T("🔎 No new suitable records for the exact query — trying extra search hints."))
                     continue
                 empty_streak = 0
                 rng.shuffle(fresh)            # dig deep into the results, not only the first lines
