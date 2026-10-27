@@ -768,7 +768,14 @@ def run_dig(params: dict, root: Path, state: JobState):
                 queries += 1
                 pipe.status(net=T("Searching: “{q}”", q=q))
                 res = fetcher.search(q)
-                fresh = [r for r in res if r["id"] not in hist.seen and r["id"] not in tried and not basic_filter(r)]
+                fresh = []
+                batch_ids = set()
+                for r in res:
+                    vid = r["id"]
+                    if vid in batch_ids or vid in tried or vid in hist.seen or basic_filter(r):
+                        continue
+                    batch_ids.add(vid)        # one search response can repeat the same video
+                    fresh.append(r)
                 log(T("🔎 “{q}”: found {n}, new suitable {k}", q=q, n=len(res), k=len(fresh)))
                 if not fresh:
                     empty_streak += 1
@@ -784,6 +791,8 @@ def run_dig(params: dict, root: Path, state: JobState):
                 continue
 
             cand = pool.pop(0)
+            if cand["id"] in tried or cand["id"] in hist.seen:
+                continue                      # recheck queued entries before any network request
             tried.add(cand["id"])
             attempts += 1
             label = f"{cand.get('artist') or '?'} — {cand.get('title') or '?'}"
