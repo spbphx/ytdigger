@@ -47,6 +47,9 @@ def P(n: int, word: str) -> str:
 
 # English source text: (Russian, Spanish)
 S: dict[str, tuple[str, str]] = {
+    "live stream or broadcast — skipping": (
+        "прямая трансляция или её запись — пропускаю",
+        "transmisión en directo o grabación de una emisión — se omite"),
     # ---- app.py
     "✕ Error: {e}": (
         "✕ Ошибка: {e}",

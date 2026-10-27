@@ -36,7 +36,7 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 FAV_DIR = "Favorites"          # copies of favourite loops on disk
 FEEDBACK_DIR = "Feedback"      # Debugging mode: loops marked "wrong match" with the analyzer's readings
 FAV_KEY = "★favorites"         # the Favorites "crate" on screen: collected from all crates
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 
 
 def default_out_dir() -> Path:
@@ -320,7 +320,7 @@ def get_loop(dig: str, name: str) -> dict | None:
 
 
 def build_ms_zip(items: list[dict]) -> tuple[Path, int, int]:
-    """ZIP for the Model:Samples:  <BPM>/<key or DR>/<loop>.wav — exactly the same files that play on screen
+    """ZIP for the Model:Samples: <BPM>/<key>, <BPM>/DR or <BPM>/BS/<key> — unchanged WAV names
     (stereo if stereo was saved). Elektron Transfer converts them to mono.
     -> (path of the zip, how many loops were added, how many were not found)"""
     import zipfile
@@ -347,7 +347,12 @@ def build_ms_zip(items: list[dict]) -> tuple[Path, int, int]:
                 missing += 1
                 continue
             kind = l.get("kind") or ("drums" if l.get("drums") else None)
-            folder = "DR" if kind == "drums" and not l.get("mixed") else l["key"]
+            folder = l["key"]
+            if not l.get("mixed"):
+                if kind == "drums":
+                    folder = "DR"
+                elif kind == "bass":
+                    folder = f"BS/{l['key']}"
             arc_dir = f"{int(l['bpm'])}/{folder}"
             arc = f"{arc_dir}/{name}.wav"
             k = 2

@@ -14,6 +14,7 @@ P0 / P1 / a / b are sample positions at SR (48 kHz).
 """
 from __future__ import annotations
 
+import copy
 import functools
 import math
 import os
@@ -564,9 +565,9 @@ class TrackAnalysis:
         o = ndimage.gaussian_filter1d(o, 1.0)
         return (o / (o.std() + 1e-9)).astype(np.float32)
 
-    def estimate_tempo(self) -> float:
+    def estimate_tempo(self, onset=None, onset_low=None) -> float:
         """Tempo "folded" into 57.5..122.5 BPM (all octaves are added together)."""
-        o = self.onset + 0.5 * self.onset_low
+        o = (self.onset if onset is None else onset) + 0.5 * (self.onset_low if onset_low is None else onset_low)
         o = o - o.mean()
         n = len(o)
         nfft = 1 << int(np.ceil(np.log2(2 * n)))
@@ -578,7 +579,7 @@ class TrackAnalysis:
             lag = np.asarray(lag, float)
             i = np.clip(lag.astype(int), 0, n - 2)
             f = lag - i
-            return ac[i] * (1 - f) + ac[i + 1] * f
+            return np.where(lag < n - 1, ac[i] * (1 - f) + ac[i + 1] * f, 0.0)
 
         T = np.arange(57.5, 122.5, 0.05)
         beat_lag = self.fps * 60.0 / T
@@ -587,6 +588,108 @@ class TrackAnalysis:
         prior = np.exp(-0.5 * (np.log2(T / 92.0) / 0.6) ** 2)
         score = score * (1 + 0.15 * prior)
         return float(T[int(np.argmax(score))])
+
+    def phrase_bounds(self, t0: float, t1: float):
+        """Nearby acoustic phrase boundaries, with short syllable gaps joined together.
+        Only bounded slices of existing loudness features are used; continuous sound has no bounds."""
+        radius = 2.0
+        fps = self.iso["fps"]
+        a = max(0, int((t0 - radius - 0.25) * fps))
+        b = min(len(self.iso["tot"]), int((t1 + radius + 0.25) * fps) + 1)
+        env = ndimage.uniform_filter1d(self.iso["tot"][a:b].astype(np.float32), max(1, round(0.04 * fps)))
+        if len(env) < 4:
+            return None
+        floor, loud = np.percentile(env, [10, 85])
+        if loud - floor < 10 or loud < -65:
+            return None
+        active = env > max(floor + 6, loud - 24)
+        # Short gaps between syllables belong to the same phrase; edge gaps stay open.
+        edges = np.diff(np.r_[False, ~active, False].astype(np.int8))
+        for left, right in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+            if left > 0 and right < len(active) and right - left <= round(0.25 * fps):
+                active[left:right] = True
+        edges = np.diff(np.r_[False, active, False].astype(np.int8))
+        runs = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)))
+        starts = [max(0.003, (a + left) / fps - 0.03) for left, _ in runs
+                  if left >= round(0.08 * fps) or a == 0]
+        ends = [min(self.dur - 0.003, (a + right) / fps + 0.08) for _, right in runs
+                if right <= len(active) - round(0.08 * fps) or b == len(self.iso["tot"])]
+        at_start = active[int(np.clip(round(t0 * fps) - a, 0, len(active) - 1))]
+        at_end = active[int(np.clip(round(t1 * fps) - a, 0, len(active) - 1))]
+        pairs = [(s, e) for s in starts for e in ends
+                 if abs(s - t0) <= radius and abs(e - t1) <= radius and e - s >= 0.5
+                 and s < (t0 + t1) / 2 < e
+                 and (not at_start or s <= t0) and (not at_end or e >= t1)]
+        return min(pairs, key=lambda p: abs(p[0] - t0) + abs(p[1] - t1)) if pairs else None
+
+    def local_grid(self, t0: float, t1: float, bars: int):
+        """Recheck a candidate with short context (usually 3..15 s, longer for long loops).
+        The returned shallow view shares the track's large arrays; no analysis cache is retained.
+        A periodic context alone is insufficient: the chosen span must have its own clear pulse."""
+        radius = min(2.0, max(0.5, (t1 - t0) * 0.2))
+        width = max(3.0, t1 - t0 + 2 * radius)
+        a = max(0.0, min((t0 + t1 - width) / 2, self.dur - width))
+        b = min(self.dur, a + width)
+        fa, fb = int(a * self.fps), min(len(self.onset), int(b * self.fps))
+        if b - a < 3 or fb - fa < 3 * self.fps:
+            return None
+        onset, low = self.onset[fa:fb], self.onset_low[fa:fb]
+        tempo = self.estimate_tempo(onset, low)
+        count = int(bars * 4)
+        # A slower local song may need more source audio than the original candidate's duration.
+        if t0 + count * 60.0 / tempo + radius > b:
+            a, b = max(0.0, t0 - radius), min(self.dur, t0 + count * 60.0 / tempo + radius)
+            fa, fb = int(a * self.fps), min(len(self.onset), int(b * self.fps))
+            onset, low = self.onset[fa:fb], self.onset_low[fa:fb]
+            tempo = self.estimate_tempo(onset, low)
+        frames = self.track_beats(onset, self.fps * 60.0 / tempo)
+        beats, _ = self.refine_times((frames + fa) / self.fps)
+        # A phrase may end in silence instead of another attack. One last boundary can be
+        # inferred from the preceding pulses; confidence below still uses the audible beats.
+        if len(beats) == count and count >= 4:
+            interval = float(np.median(np.diff(beats)))
+            if beats[-1] + interval <= min(self.dur - 0.1, t1 + radius):
+                beats = np.r_[beats, beats[-1] + interval]
+                frames = np.r_[frames, frames[-1] + interval * self.fps]
+        if len(beats) <= count:
+            return None
+        local = copy.copy(self)
+        local.tempo, local.beat_frames, local.beat_times = tempo, frames + fa, beats
+        phase = local.find_downbeat_phase()
+        starts = [i for i in range(len(beats) - count)
+                  if beats[i] >= 0.15 and beats[i + count] <= self.dur - 0.1]
+        if not starts:
+            return None
+        s = min(starts, key=lambda i: abs(beats[i] - t0) + (0 if i % 4 == phase else 0.02))
+        e = s + count
+        if abs(beats[s] - t0) > 2 * 60.0 / tempo:
+            return None
+        intervals = np.diff(beats[s:e + 1])
+        if np.std(intervals) / np.mean(intervals) > 0.05:
+            return None
+        # Validate only this span, so a beatless intro cannot borrow the next song's rhythm.
+        ca, cb = int(beats[s] * self.fps), int(beats[e] * self.fps)
+        span = self.onset[ca:cb].astype(np.float64)
+        if len(span) < 4 or float(span.max()) <= 1e-6:
+            return None
+        smooth = ndimage.gaussian_filter1d(self.onset[ca:cb + 1].astype(np.float64), 2)
+        positions = np.clip(np.rint(beats[s:e] * self.fps).astype(int) - ca, 0, len(smooth) - 1)
+        values = smooth[positions]
+        pulse = float(values.mean() / (smooth.mean() + 1e-9))
+        support = int(np.sum(values >= max(float(smooth.mean()) * 1.5, float(smooth.max()) * 0.2)))
+        centered = span - span.mean()
+        lag = int(round(np.mean(intervals) * self.fps))
+        lags = [k for mult in (1, 2) for k in range(max(1, mult * lag - 1), min(len(span), mult * lag + 2))]
+        ac = max((float(np.dot(centered[k:], centered[:-k]) / (np.dot(centered, centered) + 1e-9))
+                  for k in lags), default=0.0)
+        if pulse < 2.5 or support < max(3, math.ceil(count / 2)) or ac < 0.15:
+            return None
+        # A compilation's other songs must not supply the vocal loop's key.
+        ka = max(0, int((beats[s] - 4) * self.cfps))
+        kb = min(len(self.chroma_raw), int((beats[e] + 4) * self.cfps) + 1)
+        chroma = self.chroma_raw[ka:kb].sum(0)
+        local.track_chroma = chroma / (chroma.sum() + 1e-9)
+        return local, s, e, dict(grid_pulse=round(pulse, 2), grid_ac=round(ac, 2))
 
     @staticmethod
     def track_beats(onset, period, tightness=120.0):
@@ -1285,6 +1388,76 @@ def _render_span(an: TrackAnalysis, t0: float, t1: float, beats: int, opts: dict
                 bars=named_beats / 4.0, beats=named_beats,
                 engine=engine, src_start=round(t0, 3), src_end=round(t1, 3),
                 drums=bool(an.drum_metrics(t0, t1)["ok"]))
+
+
+def _fit_off_grid(an: TrackAnalysis, candidate: dict, bars: int, opts: dict, bounds, targets, grid=None):
+    """Fit a complete phrase or a confirmed beat span, then recheck isolation and the seam."""
+    kind = candidate.get("kind")
+    local, s, e, debug = grid if grid else (an, None, None, {})
+    if bounds:
+        t0, t1 = bounds
+        if grid is None:
+            local = copy.copy(an)
+            a = max(0, int((t0 - 4) * an.cfps))
+            b = min(len(an.chroma_raw), int((t1 + 4) * an.cfps) + 1)
+            chroma = an.chroma_raw[a:b].sum(0)
+            local.track_chroma = chroma / (chroma.sum() + 1e-9)
+    else:
+        t0, t1 = local.beat_times[s], local.beat_times[e]
+    fitted_bpm = bars * 4 * 60.0 / (t1 - t0)
+    targets = sorted(targets, key=lambda t: abs(t / (local.tempo if grid else fitted_bpm) - 1))
+    stretch_limit = min(0.12, opts.get("max_stretch", 0.05))
+    attempts = ([] if opts.get("mode") == "vinyl" else [("stretch", stretch_limit)]) + [("vinyl", 0.05), ("vinyl", 0.12)]
+    for mode, limit in attempts:
+        for target in targets:
+            if abs(target / fitted_bpm - 1) > limit + 1e-9:
+                continue
+            o = dict(opts, mode=mode, fixed_bpm=target, max_stretch=1 / (1 - limit) - 1)
+            r = _render_span(local, t0, t1, bars * 4, o) if bounds else render_loop(local, s, e, o)
+            if r is None or r["bars"] != bars or abs(r["stretch_pct"]) > limit * 100 + 0.01:
+                continue
+            m = an.iso_metrics(r["src_start"], r["src_end"])
+            grade = iso.grade(m, kind)
+            if grade < candidate.get("grade", 1):
+                return None
+            jump = an.edge_jump(r["src_start"], r["src_end"]) if kind == "vocal" else 0.0
+            if abs(jump) > 6.0 and not bounds:
+                return None
+            r.update(local_grid=bool(grid), grade=grade, purity=round(float(np.clip(iso.score(m, kind), 0, 1)), 2),
+                     dbg={**{k: round(float(v), 2) for k, v in m.items()}, **debug,
+                          "edge_jump": round(jump, 1)})
+            if bounds:
+                r.update(phrase_fit=True, free=not bool(grid), real_bpm=None)
+                r["dbg"]["phrase_seconds"] = round(t1 - t0, 3)
+            if grid:
+                real = 60.0 * (e - s) / (local.beat_times[e] - local.beat_times[s])
+                r["dbg"]["local_bpm"] = round(real, 2)
+                if bounds:
+                    r["real_bpm"] = round(real, 2)
+            return r
+    return None
+
+
+def render_local(an: TrackAnalysis, candidate: dict, bars: int, opts: dict) -> dict | None:
+    """Prefer complete nearby phrases, with confirmed local BPM or the existing target as fallback.
+    Unconfirmed phrase fitting remains explicitly off-grid, even though its length is exact."""
+    if candidate.get("kind") not in ("pads", "vocal"):
+        return None
+    bounds = opts["phrase_bounds"] if "phrase_bounds" in opts else an.phrase_bounds(candidate["t0"], candidate["t1"])
+    t0, t1 = bounds or (candidate["t0"], candidate["t1"])
+    grid = an.local_grid(t0, t1, bars)
+    if grid:
+        local, s, e, _ = grid
+        real = 60.0 * (e - s) / (local.beat_times[e] - local.beat_times[s])
+        targets = [t for t in range(5 * math.ceil(opts["bpm_min"] / 5), 5 * math.floor(opts["bpm_max"] / 5) + 1, 5)
+                   if abs(t / real - 1) <= 0.12 + 1e-9]
+        r = _fit_off_grid(an, candidate, bars, opts, bounds, targets, grid)
+        if r is not None:
+            return r
+    target = opts.get("free_bpm")
+    if bounds and target and opts["bpm_min"] <= target <= opts["bpm_max"]:
+        return _fit_off_grid(an, candidate, bars, opts, bounds, [target])
+    return None
 
 
 def render_free(an: TrackAnalysis, t0: float, bars: float, target: int, opts: dict) -> dict:

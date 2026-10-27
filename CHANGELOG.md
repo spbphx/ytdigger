@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.3
+- YouTube searches skip live, scheduled and archived broadcasts using service metadata. Metadata checks and download guards prevent streams from reaching audio analysis or holding up a dig; a rejected broadcast does not trigger another download attempt.
+- "Download all" now stores Bass Only loops in `<BPM>/BS/<key>/`. Drums Only stays in `<BPM>/DR/`; other loop types keep their key folders. Audio filenames and paths in the Loops folder stay unchanged.
+- No-grid pads and vocals are rechecked in short local windows, usually 3–15 seconds with extra room for long or slower phrases. A confirmed local rhythm allows a loop to use its own BPM instead of the shared record tempo.
+- Nearby pauses are used to preserve complete phrases before fitting them to an exact number of bars. Stretching is tried first in Stretching mode; pitch fallback prefers changes within 5% and allows at most ±12%, updating the key, Camelot code and saved filename. A phrase that cannot fit within these limits is skipped instead of truncated.
+- Fitted phrases without a confirmed source rhythm keep the no-grid label and show their processing in English, Russian and Spanish. Ordinary grid-loop processing is unchanged, and temporary local analysis views share existing track data without retaining a new cache.
+
 ## 1.4.2
 - "Download all" now puts Drums Only loops into `<BPM>/DR/` inside the ZIP instead of a key folder. Loop names and paths in the Loops folder stay unchanged; other loop types keep their key folders.
 - Fixed favorite stars losing their yellow state after background updates or crate changes. Stars respond immediately to clicks, and crate saves no longer overwrite favorite marks. Failed saves restore the previous state and report the error.

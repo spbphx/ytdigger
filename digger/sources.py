@@ -202,6 +202,16 @@ class BotBlocked(RuntimeError):
     """YouTube refuses even with cookies — there is no point in digging further."""
 
 
+class StreamSkipped(RuntimeError):
+    """A broadcast was rejected before downloading or handing any audio to analysis."""
+
+
+def is_stream(info: dict) -> bool:
+    """Use service metadata, including scheduled broadcasts and archived streams."""
+    return (any(info.get(k) for k in ("is_live", "was_live", "is_upcoming", "isLive", "isLiveContent"))
+            or info.get("live_status") in ("is_live", "is_upcoming", "post_live", "was_live"))
+
+
 # the order in which browsers are tried when YouTube asks for cookies
 if sys.platform == "darwin":
     COOKIE_BROWSERS = ["firefox", "safari", "chrome", "brave", "edge"]
@@ -259,6 +269,7 @@ class Fetcher:
             remote_components=["ejs:github"],
             outtmpl=str(self.tmp / "%(id)s.%(ext)s"),
             format="bestaudio/best",
+            match_filter=self._reject_stream, wait_for_video=None,
             overwrites=True, cachedir=str(self.tmp / ".ytdlp-cache"),
             # don't hammer YouTube with back-to-back requests — like a normal listener, without a steady "robot rhythm"
             sleep_interval_requests=round(random.uniform(*PAUSE), 2), sleep_interval=1, max_sleep_interval=3,
@@ -277,6 +288,12 @@ class Fetcher:
         """yt-dlp progress hook: raising here aborts the download."""
         if self.stop():
             raise Stopped()
+        self._reject_stream(d.get("info_dict") or {})
+
+    @staticmethod
+    def _reject_stream(info, *, incomplete=False):
+        if is_stream(info):
+            raise StreamSkipped(T("live stream or broadcast — skipping"))
 
     def _pace(self):
         """Random pause between requests (0.4-1.2 s after the previous one ended); "Stop" interrupts it."""
@@ -344,6 +361,8 @@ class Fetcher:
             self._ytm = YTMusic(language="en")
         out = []
         for r in self._ytm.search(query, filter="songs", limit=limit) or []:
+            if is_stream(r):
+                continue
             vid = r.get("videoId")
             if not vid:
                 continue
@@ -365,11 +384,11 @@ class Fetcher:
         """A search results page through yt-dlp without resolving each entry (fast)."""
         import yt_dlp
         with yt_dlp.YoutubeDL(self._opts(extract_flat="in_playlist", playlistend=limit,
-                                         noplaylist=False)) as y:
+                                         noplaylist=False, match_filter=None)) as y:
             info = y.extract_info(url, download=False)
         out = []
         for e in (info or {}).get("entries") or []:
-            if not e or not e.get("id"):
+            if not e or not e.get("id") or is_stream(e):
                 continue
             out.append(dict(id=e["id"], title=e.get("title") or "",
                             artist=e.get("artist") or e.get("channel") or e.get("uploader") or "",
@@ -399,6 +418,7 @@ class Fetcher:
     # ------------------------------------------------------------- probing + downloading
     def probe(self, cand: dict) -> dict:
         """Full metadata of a track (title, artist, duration, description with the year) without downloading."""
+        self._reject_stream(cand)
         self._pace()
         try:
             return self._run(lambda: self._with_cookie_fallback(lambda: self._probe(cand)))
@@ -407,6 +427,8 @@ class Fetcher:
 
     def download(self, cand: dict, info: dict | None = None) -> Path:
         """Download the best audio stream of a track into the tmp folder. -> path of the file"""
+        self._reject_stream(cand)
+        self._reject_stream(info or {})
         self._pace()
 
         def job():
@@ -418,7 +440,7 @@ class Fetcher:
                         raise
                 # the stream links in info may have been fetched without cookies — get everything again
                 return self._with_cookie_fallback(lambda: self._download(cand, None))
-            except Stopped:
+            except (Stopped, StreamSkipped):
                 self._drop_partial(cand["id"])    # don't leave a half-downloaded file behind
                 raise
         try:
@@ -488,10 +510,14 @@ class Fetcher:
         import yt_dlp
         url = video_url(cand["id"], self.source)
         with yt_dlp.YoutubeDL(self._opts()) as y:
-            return y.extract_info(url, download=False)
+            info = y.extract_info(url, download=False)
+        self._reject_stream(info or {})
+        return info
 
     def _download(self, cand: dict, info: dict | None = None) -> Path:
         import yt_dlp
+        self._reject_stream(cand)
+        self._reject_stream(info or {})
         url = video_url(cand["id"], self.source)
         for f in self.tmp.glob(f"{cand['id']}.*"):
             try:
@@ -503,10 +529,13 @@ class Fetcher:
             if info is not None:
                 try:
                     done = y.process_ie_result(info, download=True)
+                except StreamSkipped:
+                    raise
                 except Exception:
                     done = None
             if done is None:
                 done = y.extract_info(url, download=True)
+        self._reject_stream(done or {})
         path = None
         for d in (done or {}).get("requested_downloads") or []:
             if d.get("filepath") and os.path.exists(d["filepath"]):
@@ -562,6 +591,8 @@ def era_check(cand: dict, info: dict, y0: int, y1: int, strict: bool):
 
 def basic_filter(cand: dict, min_s=95, max_s=600) -> str | None:
     """Quick rejection by title and length (remixes, lo-fi, type beats, hour-long mixes). -> reason or None"""
+    if is_stream(cand):
+        return T("live stream or broadcast — skipping")
     t = f"{cand.get('title', '')} {cand.get('album', '')} {cand.get('artist', '')}"
     if BAD.search(t):
         return T("not it (remix/lo-fi/beat)")

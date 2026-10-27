@@ -25,7 +25,7 @@ from collections import Counter
 
 from . import dsp, i18n, iso, workers
 from .i18n import P, T, set_lang
-from .sources import (SOURCES, BotBlocked, Fetcher, Stopped, basic_filter, build_query,
+from .sources import (SOURCES, BotBlocked, Fetcher, Stopped, StreamSkipped, basic_filter, build_query,
                       era_check, explain_error, human_count, video_url)
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -320,7 +320,7 @@ def _cut(x, p: dict, hint_bpm, lenient) -> dict:
         free_bpm = None
         dry = an.pick_loops(n + 4, p["bars"], p["prefer"], rng)
 
-    # one target tempo for the whole record — loops of one track will fit each other
+    # Existing grid candidates share a target; confirmed local rescues may choose their own BPM.
     opts, fixed = _loop_opts(p), None
     grid = [c for c in dry[:n] if not c.get("free")]
     if grid:
@@ -328,25 +328,42 @@ def _cut(x, p: dict, hint_bpm, lenient) -> dict:
         reals = [60.0 * (c["e"] - c["s"]) / (bt[c["e"]] - bt[c["s"]]) for c in grid]
         fixed = dsp.choose_target(float(np.median(reals)), p["bpm_min"], p["bpm_max"], None, 0.05)
     free_target = fixed[0] if fixed else free_bpm
+    accepted_spans = []
+
+    def render_off_grid(c):
+        kind = c.get("kind")
+        bounds = an.phrase_bounds(c["t0"], c["t1"])
+        r = dsp.render_local(an, c, p["bars"], dict(opts, kind=kind, max_stretch=_max_stretch(p, kind),
+                                                 free_bpm=free_target, phrase_bounds=bounds))
+        if r and not any(r["src_start"] < b - 0.005 and r["src_end"] > a + 0.005 for a, b in accepted_spans):
+            c.update(t0=r["src_start"], t1=r["src_end"], free=r.get("free", False),
+                     sig=an.sig_at(r["src_start"], r["src_end"]))
+            return r
+        if bounds:
+            return None                    # try another candidate instead of cutting through a known phrase
+        return dsp.render_free(an, c["t0"], p["bars"], free_target, dict(opts, kind=c.get("kind")))
 
     def render(c):
         """Render one candidate -> loop dict with audio (or None if it can't be fitted / has a bad seam)."""
         kind = c.get("kind")
         if c.get("free"):
-            r = dsp.render_free(an, c["t0"], p["bars"], free_target, dict(opts, kind=kind))
+            r = render_off_grid(c)
         else:
             ms = _max_stretch(p, kind)
             o = dict(opts, kind=kind, max_stretch=ms)
             if fixed:
                 o.update(fixed_bpm=fixed[0], max_stretch=max(0.07, ms))
             r = dsp.render_loop(an, c["s"], c["e"], o)
-            if r is None and kind == "pads" and free_target:      # the pad didn't fit the tempo — cut it without stretching
-                r = dsp.render_free(an, c["t0"], p["bars"], free_target, dict(opts, kind=kind))
+            if r is None and kind == "pads" and free_target:
+                r = render_off_grid(c)
         if r:
+            accepted_spans.append((r["src_start"], r["src_end"]))
             r["score"] = round(float(c.get("rank", c.get("score", 0))), 3)
             if kind:
-                r.update(kind=kind, mixed=c.get("grade", 2) < 2, grade=int(c.get("grade", 2)),
-                         purity=round(float(c.get("purity", 0)), 2), dbg=c.get("dbg", {}))
+                grade = int(r.get("grade", c.get("grade", 2)))
+                r.update(kind=kind, mixed=grade < 2, grade=grade,
+                         purity=r.get("purity", round(float(c.get("purity", 0)), 2)),
+                         dbg={**c.get("dbg", {}), **r.get("dbg", {})})
         return r
 
     if only:          # several "Only" types take turns; inside a type — cleanest first
@@ -821,6 +838,8 @@ def run_dig(params: dict, root: Path, state: JobState):
             except Stopped:                             # "Stop" in the middle of a request — don't wait for the answer
                 log(T("⏹ Stopped"))
                 break
+            except StreamSkipped as e:
+                log(f"⏭ {label}: {e}")
             except BotBlocked as e:
                 log(f"⛔ {e}")
                 log(T("   Network stopped so as not to burn through records; finishing what's already "
@@ -914,6 +933,8 @@ def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobStat
             pipe.submit(src, track, cleanup=downloaded)   # the source in the crate is not deleted
     except Stopped:
         log(T("⏹ Stopped"))
+    except StreamSkipped as e:
+        log(f"⏭ {label}: {e}")
     except Exception as e:
         log(f"✕ {label}: {explain_error(e)}")
     finally:
