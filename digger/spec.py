@@ -5,12 +5,14 @@ long tracks are processed in chunks, and the whole track is never copied to floa
 from __future__ import annotations
 
 import numpy as np
+import scipy
 import scipy.fft as sfft
-from scipy import signal
+from scipy import ndimage, signal
 
 # Threads per FFT. Analysis processes of the pipeline set fewer, so they don't fight over cores.
 FFT_WORKERS = -1
 BLOCK = 480000          # chunk size for streaming processing (10 s at 48 kHz)
+_FAST_MEDIAN = np.lib.NumpyVersion(scipy.__version__) >= "1.15.0"
 
 
 def db(e):
@@ -71,9 +73,26 @@ def hpss_inplace(S: np.ndarray, kt: int, kf: int, chunk: int = 1024):
 
 
 def median(X: np.ndarray, k: int, axis: int) -> np.ndarray:
-    """Sliding median with window k along axis 0 or 1 (edges repeat the edge value, like
-    mode="nearest" of ndimage.median_filter; the result is bit-identical). Uses np.partition —
-    2-3x faster than ndimage; works on blocks of rows so temporary memory stays ~8 MB."""
+    """Sliding median along axis 0 or 1, with repeated edge values.
+
+    SciPy >= 1.15 has a fast 1D rank filter. Edge guards let it process independent
+    lines in one call without mixing their neighbours or materialising every window.
+    HPSS calls this on bounded chunks. Older SciPy, other dtypes and non-finite
+    values retain the partition implementation and its existing behaviour.
+    """
+    if (_FAST_MEDIAN and X.dtype in (np.float32, np.float64)
+            and k > 0 and k % 2 == 1 and all(X.shape) and np.isfinite(X).all()):
+        p = k // 2
+        rows = X.T if axis == 0 else X
+        guarded = np.pad(rows, ((0, 0), (p, p)), mode="edge")
+        filtered = ndimage.median_filter(guarded.reshape(-1), size=k, mode="nearest")
+        out = filtered.reshape(guarded.shape)[:, p:p + rows.shape[1]]
+        return np.ascontiguousarray(out.T if axis == 0 else out)
+    return _median_partition(X, k, axis)
+
+
+def _median_partition(X: np.ndarray, k: int, axis: int) -> np.ndarray:
+    """Compatibility fallback; partition windows in blocks of about 8 MB."""
     p = k // 2
     n, m = X.shape
     out = np.empty_like(X)

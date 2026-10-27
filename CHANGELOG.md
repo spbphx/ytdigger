@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.1
+- One-shot ZIP downloads are named `_{KEY}_{ORIGINAL_SONG_NAME}_{YYYY-MM-DD}_{HH-MM}.zip`, using the source song title instead of the `1shots` prefix. Unicode titles are preserved; characters invalid in file names are replaced.
+- Accelerated spectral HPSS median filtering with SciPy's 1D rank filter while preserving repeated-edge boundaries. Older SciPy versions, other dtypes and non-finite arrays retain the previous partition path; dependencies and analysis/selection stages are unchanged.
+- YouTube searches now allow type beats; YouTube Music keeps the type-beat filter. Other title, duration and broadcast filters are unchanged.
+- Search queries containing three or more user-entered words start unchanged. When the exact query has no new suitable records, digging switches to nonempty extra hints, avoiding queries already exhausted in that dig. Shorter queries retain their existing variations; result filters still follow the selected settings.
+
 ## 1.5
 - Added a compact six-slot loop mixer in the jam bar. Playing loops fill the slots from left to right with their record covers; stopped loops release their thumbnail elements. Up to six loops can play at once, including starts still loading.
 - Every loop starts at 75% with its own gain. Drag its cover up or down for smooth volume changes, or use the arrow keys (Shift for larger steps), Home and End. Right-click a cover, or press Enter while focused, to scroll to that loop. The overall volume control is now called Master. Jam ZIPs preserve individual loop levels.

@@ -964,7 +964,9 @@ async function chopLoop(l, btn){
     const r = await fetch("/api/oneshots",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dig:l.dig, name:l.name})});
     if(!r.ok){ const e = await r.json().catch(()=>({})); toast(e.error || t("chopFail")); return; }
     const blob = await r.blob();
-    const name = (/filename="([^"]+)"/.exec(r.headers.get("Content-Disposition")||"")||[])[1] || "oneshots.zip";
+    const disposition = r.headers.get("Content-Disposition")||"";
+    const encodedName = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+    const name = encodedName ? decodeURIComponent(encodedName[1]) : ((/filename="([^"]+)"/.exec(disposition)||[])[1] || "oneshots.zip");
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 60000);
     const got = +(r.headers.get("X-Loops")||0);

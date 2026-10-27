@@ -37,7 +37,7 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 FAV_DIR = "Favorites"          # copies of favourite loops on disk
 FEEDBACK_DIR = "Feedback"      # Debugging mode: loops marked "wrong match" with the analyzer's readings
 FAV_KEY = "★favorites"         # the Favorites "crate" on screen: collected from all crates
-VERSION = "1.5"
+VERSION = "1.5.1"
 
 
 def default_out_dir() -> Path:
@@ -449,7 +449,8 @@ def build_oneshot_zip(dig: str, name: str) -> tuple[Path | None, int, str]:
     The hits are found by transient detection (digger.oneshots); each sample ends just
     before the next transient begins, so the hits never overlap and never lose their
     attack. -> (path of the zip, number of samples, zip name) — or (None, 0, error text)"""
-    l = get_loop(dig, name)
+    track, l = next(((t, loop) for t in read_dig(dig).get("tracks", [])
+                     for loop in t.get("loops", []) if loop.get("name") == name), ({}, None))
     if not l:
         return None, 0, T("loop files not found on disk")
     files = l.get("files") or {}
@@ -474,7 +475,9 @@ def build_oneshot_zip(dig: str, name: str) -> tuple[Path | None, int, str]:
             z.write(wav, f"{base}_{i:02d}.wav")
             wav.unlink(missing_ok=True)
     stamp = time.strftime("%Y-%m-%d_%H-%M")
-    return zpath, len(segs), f"1shots_{l.get('key') or base}_{stamp}.zip"
+    key = core.safe_name(l.get("key") or "Unknown")
+    song = core.safe_name(track.get("title") or name)
+    return zpath, len(segs), f"_{key}_{song}_{stamp}.zip"
 
 
 def update_loop_meta(dig: str, name: str, **changes):
@@ -771,8 +774,11 @@ class Handler(BaseHTTPRequestHandler):
                 zpath, added, zname = build_oneshot_zip(str(b.get("dig", "")), str(b.get("name", "")))
                 if zpath is None:
                     return self._json({"error": zname}, 404)
+                fallback = zname.encode("ascii", "replace").decode("ascii").replace("?", "_")
+                disposition = (f'attachment; filename="{fallback}"; '
+                               f"filename*=UTF-8''{urllib.parse.quote(zname, safe='')}")
                 return self._file(zpath, "application/zip", {
-                    "Content-Disposition": f'attachment; filename="{zname}"', "X-Loops": str(added)}, cleanup=True)
+                    "Content-Disposition": disposition, "X-Loops": str(added)}, cleanup=True)
             if u.path == "/api/wrong":              # Debugging mode: 👎 wrong match — set or remove
                 wrong = set_wrong(str(b.get("dig", "")), str(b.get("name", "")), bool(b.get("on", True)))
                 if wrong is None:
