@@ -76,9 +76,12 @@ HOW TO USE
    "Add a past crate" at the top brings old digs back to the screen,
    "Clear screen" removes everything from the screen (files on disk are not touched).
    "Download all as ZIP" at the bottom — all loops on screen in one archive for Model:Samples:
-     90/Amin/Amin90Name1.wav
-     110/G#maj/G#maj110Other2.wav
-   (a BPM folder with a key folder inside; the files are the same ones that play on screen —
+     Amin/90/Amin90Name1.wav
+     G#maj/110/G#maj110Other2.wav
+     DR/95/Amin95DBreak1.wav
+     BS/Amin/Amin95BBass1.wav
+   (key/BPM; Drums Only go in DR/BPM, all bass loops go in BS/key;
+   the files are the same ones that play on screen —
    stereo 24-bit if it was saved). Unpack it and transfer whole folders with
    Elektron Transfer — it converts stereo to mono by itself.
 5. You can drop your own mp3/wav/flac into the window (vinyl rips, for example) —

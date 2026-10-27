@@ -78,9 +78,12 @@ CÓMO SE USA
    «Añadir una caja anterior» arriba devuelve a la pantalla excavaciones antiguas,
    «Limpiar pantalla» quita todo de la pantalla (los archivos del disco no se tocan).
    «Descargar todo en ZIP» abajo: todos los loops de la pantalla en un archivo para Model:Samples:
-     90/Amin/Amin90Name1.wav
-     110/G#maj/G#maj110Other2.wav
-   (una carpeta por BPM y dentro una por tonalidad; son los mismos archivos que suenan en
+     Amin/90/Amin90Name1.wav
+     G#maj/110/G#maj110Other2.wav
+     DR/95/Amin95DBreak1.wav
+     BS/Amin/Amin95BBass1.wav
+   (tonalidad/BPM; solo batería en DR/BPM y todos los loops de bajo en BS/tonalidad;
+   son los mismos archivos que suenan en
    pantalla, estéreo 24 bits si se guardaron). Descomprímelo y pasa las carpetas enteras con
    Elektron Transfer: él mismo convierte el estéreo a mono.
 5. Puedes soltar en la ventana tus propios mp3/wav/flac (por ejemplo, rips de vinilo):
