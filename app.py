@@ -36,7 +36,7 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 FAV_DIR = "Favorites"          # copies of favourite loops on disk
 FEEDBACK_DIR = "Feedback"      # Debugging mode: loops marked "wrong match" with the analyzer's readings
 FAV_KEY = "★favorites"         # the Favorites "crate" on screen: collected from all crates
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 
 def default_out_dir() -> Path:
@@ -140,7 +140,9 @@ def all_digs():
     for d in sorted([p for p in root.iterdir() if p.is_dir() and (p / "dig.json").exists()],
                     key=lambda p: p.name, reverse=True):
         try:
-            yield d.name, json.loads((d / "dig.json").read_text("utf8"))
+            with core.META_LOCK:
+                meta = json.loads((d / "dig.json").read_text("utf8"))
+            yield d.name, meta
         except Exception:
             continue
 
@@ -302,7 +304,8 @@ def read_dig(dig: str) -> dict:
     """dig.json of a crate ({} if missing or broken)."""
     p = safe_path(f"{dig}/dig.json")
     try:
-        return json.loads(p.read_text("utf8"))
+        with core.META_LOCK:
+            return json.loads(p.read_text("utf8"))
     except Exception:
         return {}
 
@@ -453,15 +456,19 @@ def update_loop_meta(dig: str, name: str, **changes):
     p = safe_path(f"{dig}/dig.json")
     if not p or not p.exists():
         return
-    m = json.loads(p.read_text("utf8"))
-    for t in m.get("tracks", []):
-        for l in t["loops"]:
-            if l["name"] == name:
-                l.update(changes)
-    p.write_text(json.dumps(m, ensure_ascii=False, indent=1), "utf8")
-    with STATE.lock:
-        if STATE.dig_name == dig:
-            STATE.tracks = m["tracks"]
+    with core.META_LOCK:
+        m = json.loads(p.read_text("utf8"))
+        for t in m.get("tracks", []):
+            for l in t["loops"]:
+                if l["name"] == name:
+                    l.update(changes)
+        p.write_text(json.dumps(m, ensure_ascii=False, indent=1), "utf8")
+        with STATE.lock:
+            if STATE.dig_name == dig:
+                for t in STATE.tracks:
+                    for l in t["loops"]:
+                        if l["name"] == name:
+                            l.update(changes)
 
 
 class Handler(BaseHTTPRequestHandler):

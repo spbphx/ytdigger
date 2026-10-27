@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.2
+- "Download all" now puts Drums Only loops into `<BPM>/DR/` inside the ZIP instead of a key folder. Loop names and paths in the Loops folder stay unchanged; other loop types keep their key folders.
+- Fixed favorite stars losing their yellow state after background updates or crate changes. Stars respond immediately to clicks, and crate saves no longer overwrite favorite marks. Failed saves restore the previous state and report the error.
+- Removed loops and crates now release their stored loop data, favorite state and decoded audio cache. Expired Undo notifications release their references, and audio that finishes loading after a crate is removed cannot start hidden playback or refill its cache.
+
 ## 1.4.1
 - Hardened shutdown: stopping analysis cannot restart the process pool or launch new fallback tasks; submitting work and closing the pool are synchronized.
 - Cleanup continues even if an individual shutdown step fails, without hiding the original processing error. Re-running a record always finalizes its pipeline, including on errors.

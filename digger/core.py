@@ -29,6 +29,7 @@ from .sources import (SOURCES, BotBlocked, Fetcher, Stopped, basic_filter, build
                       era_check, explain_error, human_count, video_url)
 
 APP_DIR = Path(__file__).resolve().parent.parent
+META_LOCK = threading.Lock()  # serialize crate saves and changes made by the star button
 
 STEREO_DIR = "Stereo_24bit"
 MS_DIR = "ModelSamples_mono16"
@@ -926,7 +927,20 @@ def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobStat
 
 def write_meta(dig_dir: Path, meta: dict):
     """Write dig.json, credits.txt and MODEL_SAMPLES.txt of the crate."""
-    (dig_dir / "dig.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), "utf8")
+    with META_LOCK:
+        path = dig_dir / "dig.json"
+        try:
+            saved = json.loads(path.read_text("utf8"))
+        except (OSError, ValueError):
+            saved = {}
+        favorites = {l["name"]: l for t in saved.get("tracks", []) for l in t["loops"]}
+        for t in meta["tracks"]:
+            for l in t["loops"]:
+                old = favorites.get(l["name"], {})
+                for field in ("fav", "fav_files"):
+                    if field in old:
+                        l[field] = old[field]
+        path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), "utf8")
     lines = [T("YTDigger — where the loops come from (useful for sample clearance)"), ""]
     for t in meta["tracks"]:
         lines.append(f"{t['artist']} — {t['title']}" + (f" ({t['year']})" if t.get("year") else ""))

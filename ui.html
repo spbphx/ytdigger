@@ -274,7 +274,7 @@ ru: {
   barsLab:"Длина лупа", bar1:"1 такт", bar2:"2 такта", bar4:"4 такта",
   preferLab:"Какие лупы искать", any:"Любые", breaks:"Брейки", melodic:"Мелодия", onlyLab:"Только:",
   k_drums:"барабаны", k_bass:"бас", k_vocal:"вокал", k_pads:"пэды",
-  onlyHint:"Лупы с одиночными инструментами (можно выбрать несколько — лупы выбранных типов идут по очереди, сначала самые чистые)",
+  onlyHint:"Лупы с одиночными инструментами <strong>(можно выбрать несколько)</strong>",
   years:"Годы", yearsTitle:"Выключите, чтобы искать записи любых лет", bpmTitle:"Выключите, чтобы не отбрасывать треки по темпу",
   modeLab:"Подгонка темпа до кратного 5", stretch:"Стретчинг", vinyl:"Питчинг",
   hintVinyl:"Темп меняется вместе с высотой, как ручкой pitch на вертушке или MPC",
@@ -338,7 +338,7 @@ en: {
   barsLab:"Loop length", bar1:"1 bar", bar2:"2 bars", bar4:"4 bars",
   preferLab:"What loops to look for", any:"Any", breaks:"Breaks", melodic:"Melody", onlyLab:"Only:",
   k_drums:"drums", k_bass:"bass", k_vocal:"vocals", k_pads:"pads",
-  onlyHint:"Loops with a single instrument (you can pick several — loops of the chosen types take turns, the cleanest first)",
+  onlyHint:"Loops with a single instrument <strong>(you can pick several)</strong>",
   years:"Years", yearsTitle:"Turn off to search recordings from any year", bpmTitle:"Turn off to keep tracks of any tempo",
   modeLab:"Tempo fit to a multiple of 5", stretch:"Stretching", vinyl:"Pitching",
   hintVinyl:"Tempo and pitch change together, like the pitch fader on a turntable or an MPC",
@@ -402,7 +402,7 @@ es: {
   barsLab:"Duración del loop", bar1:"1 compás", bar2:"2 compases", bar4:"4 compases",
   preferLab:"Qué loops buscar", any:"Cualquiera", breaks:"Breaks", melodic:"Melodía", onlyLab:"Solo:",
   k_drums:"batería", k_bass:"bajo", k_vocal:"voz", k_pads:"pads",
-  onlyHint:"Loops con un solo instrumento (puedes elegir varios: los loops de los tipos elegidos se alternan, primero los más limpios)",
+  onlyHint:"Loops con un solo instrumento <strong>(puedes elegir varios)</strong>",
   years:"Años", yearsTitle:"Desactívalo para buscar grabaciones de cualquier año", bpmTitle:"Desactívalo para no descartar pistas por tempo",
   modeLab:"Ajuste de tempo a múltiplos de 5", stretch:"Stretching", vinyl:"Pitching",
   hintVinyl:"El tempo cambia junto con la altura, como el pitch de un tocadiscos o una MPC",
@@ -539,7 +539,7 @@ function syncOnly(){
   $("#prefer").querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", !on && b.dataset.v===$("#prefer").dataset.value));
   const hint = $("#preferHint");
   hint.hidden = !on;
-  hint.textContent = t("onlyHint");
+  hint.innerHTML = t("onlyHint");
 }
 function onlyList(){ return KINDS.filter(k=>onlySel.has(k)); }
 function syncFilters(){
@@ -581,8 +581,8 @@ const api = async (path, body) => {
 function toast(msg, actLabel, act){
   const el=$("#toast"); el.textContent=msg;
   if(actLabel){ const b=document.createElement("button"); b.textContent=actLabel; b.className="toastbtn";
-    b.onclick=()=>{ el.style.display="none"; act(); }; el.append(b); }
-  el.style.display="flex"; clearTimeout(el._t); el._t=setTimeout(()=>el.style.display="none", actLabel?6000:2400);
+    b.onclick=()=>{ el.style.display="none"; el.replaceChildren(); act(); }; el.append(b); }
+  el.style.display="flex"; clearTimeout(el._t); el._t=setTimeout(()=>{ el.style.display="none"; el.replaceChildren(); }, actLabel?6000:2400);
 }
 
 /* ------------ digging */
@@ -603,7 +603,9 @@ function curText(s){
   return s.status==="error" ? t("stError") : s.status==="stopped" ? t("stStopped") : (s.note || t("stDone"));
 }
 async function poll(){
+  const revision = favoriteRevision;
   let s; try{ s = await api("/api/state?since="+logSince); }catch(e){ return; }
+  if(revision!==favoriteRevision) return;
   lastStatus = s.status; lastSnap = s;
   const running = s.status==="running";
   $("#go").disabled = false;
@@ -698,6 +700,9 @@ const ICON_TRASH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2h4l
 const ICON_SAVE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h8.6l2.4 2.4v8.6h-11z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 2.5v3.2h5V2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="5" y="9" width="6" height="4.5" rx=".5" fill="currentColor"/></svg>';
 const ICON_CHOP = '<svg viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="3.6" cy="3.6" r="1.7"/><circle cx="12.4" cy="3.6" r="1.7"/><path d="M4.9 5.1 8 9l-2.7 4.7M11.1 5.1 8 9l2.7 4.7"/></g></svg>';
 const rendered = {};          // uid -> loop
+const favoriteState = new Map(); // a click owns the star's state; polling must not undo it
+const favoritePending = new Set();
+let favoriteRevision = 0;     // discard polls started before a star change, including after cleanup
 const hidden = new Set();     // uids of loops removed from the screen
 const uid = l => l.dig + "/" + l.name;
 const FAV = "★favorites";     // the "Favorites" crate: collected from all crates
@@ -786,7 +791,12 @@ function localizeScreen(){             // language change: texts change in place
 }
 function updateLoopFlags(l, el){
   el = el || document.querySelector(`.loop[data-uid="${CSS.escape(uid(l))}"]`); if(!el) return;
+  const id = uid(l);
+  if(!favoriteState.has(id)) favoriteState.set(id, !!l.fav);
+  l.fav = favoriteState.get(id);
+  if(rendered[id]) rendered[id].fav = l.fav;
   const b = el.querySelector(".fav");
+  b.disabled = favoritePending.has(id);
   b.classList.toggle("on", !!l.fav); b.setAttribute("aria-pressed", !!l.fav);
   b.title = l.fav ? t("favOnTitle") : t("favOffTitle");
   const w = el.querySelector(".wrong");
@@ -837,10 +847,22 @@ function loopRow(l){
   el.querySelector(".wave").onclick = ()=>toggleLoop(l, el);
   el.querySelector(".copy").onclick = ()=>{navigator.clipboard?.writeText(l.name); toast(t("copied",{name:l.name}))};
   el.querySelector(".fav").onclick = async ()=>{
-    const r = await api("/api/fav",{dig:l.dig, name:l.name, on:!l.fav});
-    if(r.error){ toast(r.error); return; }
-    l.fav = r.fav; updateLoopFlags(l); loadHistory();
-    toast(r.fav ? t("favAdded") : t("favRemoved"));
+    const id = uid(l);
+    if(favoritePending.has(id)) return;
+    const was = favoriteState.get(id) ?? !!l.fav;
+    favoriteRevision++;
+    favoriteState.set(id, !was); favoritePending.add(id); updateLoopFlags(l);
+    try{
+      const r = await api("/api/fav",{dig:l.dig, name:l.name, on:!was});
+      if(r.error) throw new Error(r.error);
+      favoriteState.set(id, !!r.fav); loadHistory();
+      toast(r.fav ? t("favAdded") : t("favRemoved"));
+    }catch(e){ favoriteState.set(id, was); toast(e.message); }
+    finally{
+      favoriteRevision++;
+      l.fav = favoriteState.get(id);
+      favoritePending.delete(id); updateLoopFlags(l); pruneLoopState();
+    }
   };
   el.querySelector(".save").onclick = ()=>saveLoop(l);
   el.querySelector(".wrong").onclick = async ()=>{      // Debugging mode: mark as a wrong match (or unmark)
@@ -917,6 +939,7 @@ function trashLoop(l, el){
     hidden.delete(id); api("/api/session",{action:"unhide",dig:l.dig,name:l.name});
     if(recRemoved) recParent.insertBefore(rec, recNext);
     lbox.insertBefore(el, next && next.parentNode===lbox ? next : null);
+    rendered[id] = l;
     fillLoop(el, l); fillRecord(rec);
     requestAnimationFrame(()=>drawWave(el.querySelector(".wave"), l.peaks, -1));
     updateCount();
@@ -928,7 +951,15 @@ function removeDig(dig){
   sec.remove(); api("/api/session",{action:"remove_dig",dig}); updateCount();
 }
 function visibleLoops(){ return [...document.querySelectorAll("#records .loop")].map(e=>rendered[e.dataset.uid]).filter(Boolean); }
+function pruneLoopState(){
+  const shown = new Set([...document.querySelectorAll("#records .loop")].map(e=>e.dataset.uid));
+  for(const id of Object.keys(rendered)) if(!shown.has(id)) delete rendered[id];
+  for(const id of favoriteState.keys())
+    if(!shown.has(id) && !favoritePending.has(id)) favoriteState.delete(id);
+  for(const id of Object.keys(buffers)) if(!shown.has(id) && !voices[id]) delete buffers[id];
+}
 function updateCount(){
+  pruneLoopState();
   const n = visibleLoops().length;
   $("#crateTitle").textContent = n ? t("onScreen",{n, w:pl(n,"loops")}) : t("crateEmpty");
   $("#zipBtn").textContent = n ? t("zipN",{n}) : t("zip");
@@ -993,7 +1024,7 @@ function renderHistory(){
 }
 async function showFavorites(){
   const old = document.querySelector(`.digsec[data-dig="${CSS.escape(FAV)}"]`);
-  if(old){ old.querySelectorAll(".loop").forEach(e=>stopLoop(e.dataset.uid)); old.remove(); }  // refresh
+  if(old){ old.querySelectorAll(".loop").forEach(e=>stopLoop(e.dataset.uid)); old.remove(); pruneLoopState(); }  // refresh
   const m = await api("/api/favorites");
   if(!m.tracks.length){ toast(t("favEmpty")); updateCount(); return; }
   await api("/api/session",{action:"add",dig:FAV});
@@ -1059,13 +1090,16 @@ async function getBuf(l){
   if(buffers[uid(l)]) return buffers[uid(l)];
   const r = await fetch(fileUrl(l));
   if(!r.ok) throw new Error("404");
-  return buffers[uid(l)] = await audio().decodeAudioData(await r.arrayBuffer());
+  const buf = await audio().decodeAudioData(await r.arrayBuffer());
+  if(rendered[uid(l)]) buffers[uid(l)] = buf;
+  return buf;
 }
 function master(){ const v=Object.values(voices); return v.length ? v.reduce((a,b)=>a.t0<b.t0?a:b) : null; }
 async function toggleLoop(l, el){
   if(voices[uid(l)]){ stopLoop(uid(l)); return; }
   let buf; try{ buf = await getBuf(l); }catch(e){ toast(t("openFail")); return; }
   const c = audio(); if(c.state==="suspended") await c.resume();
+  if(!el.isConnected) return;             // the crate may have been removed while audio was loading
   const m = master();
   const src = c.createBufferSource(); src.buffer = buf; src.loop = true;
   let rate = 1, t0 = c.currentTime + 0.03;
