@@ -317,7 +317,7 @@ def get_loop(dig: str, name: str) -> dict | None:
 
 
 def build_ms_zip(items: list[dict]) -> tuple[Path, int, int]:
-    """ZIP for the Model:Samples:  <BPM>/<key>/<loop>.wav — exactly the same files that play on screen
+    """ZIP for the Model:Samples:  <BPM>/<key or DR>/<loop>.wav — exactly the same files that play on screen
     (stereo if stereo was saved). Elektron Transfer converts them to mono.
     -> (path of the zip, how many loops were added, how many were not found)"""
     import zipfile
@@ -343,7 +343,9 @@ def build_ms_zip(items: list[dict]) -> tuple[Path, int, int]:
             if src is None:
                 missing += 1
                 continue
-            arc_dir = f"{int(l['bpm'])}/{l['key']}"
+            kind = l.get("kind") or ("drums" if l.get("drums") else None)
+            folder = "DR" if kind == "drums" and not l.get("mixed") else l["key"]
+            arc_dir = f"{int(l['bpm'])}/{folder}"
             arc = f"{arc_dir}/{name}.wav"
             k = 2
             while arc in used:                          # equal names from different crates
