@@ -58,6 +58,7 @@ ONLY_HINTS = {          # words added to the query for "Only ..." (with several 
     "pads": ["ambient", "ambient intro", "atmospheric", "library ambient", "strings intro", "new age", "breakdown"],
 }
 PAUSE = (0.4, 1.2)       # random pause between requests to YouTube, seconds
+_NETWORK_SLOTS = threading.Semaphore(2)  # at most one abandoned request plus its replacement
 SOURCES = {"ytmusic": "YouTube Music", "youtube": "YouTube"}
 RARE_HINTS = ["rare", "obscure", "private press", "deep", "unknown", "lost", "library", "promo"]
 
@@ -241,10 +242,13 @@ class Fetcher:
     """Everything that talks to YouTube: search, probing a track's metadata, downloading audio.
     One instance per dig; requests are paced (_pace) and interruptible (_run + stop)."""
     def __init__(self, tmp_dir: Path, log, cookies_browser: str | None = None, cookie_file: Path | None = None,
-                 stop=None, source: str = "ytmusic"):
+                 stop=None, source: str = "ytmusic", on_start=None, on_finish=None, on_wait=None):
         import yt_dlp  # noqa: F401  (check that it is installed)
         self.source = source if source in ("ytmusic", "youtube") else "ytmusic"
         self.stop = stop or (lambda: False)   # has "Stop" been pressed?
+        self._on_start = on_start or (lambda: None)
+        self._on_finish = on_finish or (lambda: None)
+        self.on_wait = on_wait
         self.tmp = Path(tmp_dir)
         self.tmp.mkdir(parents=True, exist_ok=True)
         self.log = log
@@ -306,22 +310,42 @@ class Fetcher:
             raise Stopped()
 
     def _run(self, fn):
-        """Run a request in a separate thread: wait for the answer, but on "Stop" return at once without
-        waiting for YouTube (the abandoned request finishes on its own and writes nothing)."""
+        """Stop waiting immediately; retain ownership and a bounded slot until the request exits."""
         box = {}
+        while not _NETWORK_SLOTS.acquire(timeout=0.05):
+            if self.stop():
+                raise Stopped()
+            if getattr(self, "on_wait", None):
+                self.on_wait()
+        if self.stop():
+            _NETWORK_SLOTS.release()
+            raise Stopped()
 
         def work():
             try:
                 box["r"] = fn()
             except BaseException as e:   # noqa: BLE001 — hand the error over to the caller
                 box["e"] = e
+            finally:
+                _NETWORK_SLOTS.release()
+                getattr(self, "_on_finish", lambda: None)()
 
         th = threading.Thread(target=work, daemon=True, name="net")
-        th.start()
+        getattr(self, "_on_start", lambda: None)()
+        try:
+            th.start()
+        except BaseException:
+            _NETWORK_SLOTS.release()
+            getattr(self, "_on_finish", lambda: None)()
+            raise
         while th.is_alive():
             th.join(0.05)
             if self.stop():
                 raise Stopped()
+            if getattr(self, "on_wait", None):
+                self.on_wait()
+        if self.stop():
+            raise Stopped()
         if "e" in box:
             raise box["e"]
         return box["r"]
@@ -345,6 +369,8 @@ class Fetcher:
         methods = ((self._search_youtube,) if self.source == "youtube" else
                    (self._search_ytmusicapi, self._search_ytdlp_music, self._search_ytdlp_plain))
         for fn in methods:
+            if self.stop():
+                raise Stopped()
             try:
                 res = fn(query, limit)
                 if res:
@@ -516,6 +542,8 @@ class Fetcher:
 
     def _download(self, cand: dict, info: dict | None = None) -> Path:
         import yt_dlp
+        if self.stop():
+            raise Stopped()
         self._reject_stream(cand)
         self._reject_stream(info or {})
         url = video_url(cand["id"], self.source)
@@ -534,7 +562,12 @@ class Fetcher:
                 except Exception:
                     done = None
             if done is None:
+                if self.stop():
+                    raise Stopped()
                 done = y.extract_info(url, download=True)
+        if self.stop():
+            self._drop_partial(cand["id"])
+            raise Stopped()
         self._reject_stream(done or {})
         path = None
         for d in (done or {}).get("requested_downloads") or []:

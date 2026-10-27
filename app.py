@@ -10,6 +10,7 @@ from __future__ import annotations
 import filecmp
 import json
 import mimetypes
+import math
 import os
 import shutil
 import socket
@@ -36,7 +37,7 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 FAV_DIR = "Favorites"          # copies of favourite loops on disk
 FEEDBACK_DIR = "Feedback"      # Debugging mode: loops marked "wrong match" with the analyzer's readings
 FAV_KEY = "★favorites"         # the Favorites "crate" on screen: collected from all crates
-VERSION = "1.4.3"
+VERSION = "1.5"
 
 
 def default_out_dir() -> Path:
@@ -76,6 +77,9 @@ SETTINGS = load_settings()
 i18n.set_lang(SETTINGS.get("lang") or "ru")
 STATE = core.JobState()
 WORKER: threading.Thread | None = None
+JOB_LOCK = threading.Lock()
+ACTIVE_JOBS: list[tuple[threading.Thread, core.JobState]] = []
+MAX_ACTIVE_JOBS = 2  # a replacement may start while one stopped job releases its actual resources
 # what is on screen: crates of this working session (while the program runs) and hidden loops
 SESSION = {"digs": [], "hidden": set()}
 SESSION_LOCK = threading.Lock()
@@ -298,6 +302,7 @@ def run_worker(job, st: core.JobState):
     finally:
         with st.lock:
             st.busy = False
+        st.cleanup_temporary()
 
 
 def read_dig(dig: str) -> dict:
@@ -310,8 +315,12 @@ def read_dig(dig: str) -> dict:
         return {}
 
 
-def get_loop(dig: str, name: str) -> dict | None:
+def get_loop(dig: str, name: str, cache=None) -> dict | None:
     """The loop entry `name` in a crate (or None)."""
+    if cache is not None:
+        if dig not in cache:
+            cache[dig] = {l["name"]: l for t in read_dig(dig).get("tracks", []) for l in t.get("loops", [])}
+        return cache[dig].get(name)
     for t in read_dig(dig).get("tracks", []):
         for l in t["loops"]:
             if l["name"] == name:
@@ -329,9 +338,10 @@ def build_ms_zip(items: list[dict]) -> tuple[Path, int, int]:
     zpath = tmp / f"export_{uuid.uuid4().hex[:8]}.zip"
     used, added, missing = set(), 0, 0
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_STORED) as z:   # wav barely compresses — storing is faster
+        cache = {}
         for it in items:
             dig, name = str(it.get("dig", "")), str(it.get("name", ""))
-            l = get_loop(dig, name)
+            l = get_loop(dig, name, cache)
             if not l:
                 missing += 1
                 continue
@@ -387,7 +397,8 @@ def build_jam_zip(items: list[dict]) -> tuple[Path, int, str]:
     master BPM / loop BPM), renamed to its new key and BPM. items: [{dig, name, rate}], master first.
     -> (path of the zip, number of loops, zip name "<master key><BPM>-<date>-<time>.zip")"""
     import zipfile
-    loops = [(get_loop(str(it.get("dig", "")), str(it.get("name", ""))), it) for it in items]
+    cache = {}
+    loops = [(get_loop(str(it.get("dig", "")), str(it.get("name", "")), cache), it) for it in items]
     loops = [(l, it) for l, it in loops if l]
     if not loops:
         return None, 0, ""
@@ -404,20 +415,30 @@ def build_jam_zip(items: list[dict]) -> tuple[Path, int, str]:
             if not (src and src.exists()):
                 continue
             rate = min(2.0, max(0.5, float(it.get("rate") or 1.0)))
-            if abs(rate - 1.0) < 1e-6:                     # the master (or "Tempo from first loop" is off)
-                data, name = src.read_bytes(), l["name"]
+            try:
+                volume = float(it.get("volume", 1.0))
+            except (TypeError, ValueError):
+                volume = 1.0
+            volume = min(1.0, max(0.0, volume)) if math.isfinite(volume) else 1.0
+            wav = None
+            if abs(rate - 1.0) < 1e-6 and volume == 1.0:
+                source, name = src, l["name"]
             else:
                 x = dsp.read_wav(src)
                 bpm = int(round(l["bpm"] * rate))
-                out = dsp.pitch_loop(x, rate, int(round(len(x) / rate)))
+                out = dsp.pitch_loop(x, rate, int(round(len(x) / rate))) if abs(rate - 1.0) >= 1e-6 else x
+                out *= volume
                 wav = tmp / f"jam_{uuid.uuid4().hex[:8]}.wav"
                 dsp.write_wav(wav, out, bits=24 if src.parent.name == core.STEREO_DIR else 16)
-                data, name = wav.read_bytes(), jam_name(l, rate, bpm)
-                wav.unlink(missing_ok=True)
+                source, name = wav, jam_name(l, rate, bpm)
             arc, k = f"{name}.wav", 2
             while arc in used:
                 arc, k = f"{name}_{k}.wav", k + 1
-            z.writestr(arc, data)
+            try:
+                z.write(source, arc)
+            finally:
+                if wav is not None:
+                    wav.unlink(missing_ok=True)
             used.add(arc)
             added += 1
     return zpath, added, f"{master['key']}{mbpm}-{time.strftime('%Y-%m-%d-%H-%M')}.zip"
@@ -503,29 +524,45 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def _file(self, path: Path, ctype=None):
+    def _file(self, path: Path, ctype=None, headers=None, cleanup=False):
         """Send a file from disk."""
         if not path.exists() or not path.is_file():
             self.send_error(404)
             return
-        data = path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", ctype or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            with path.open("rb") as f:
+                self.send_response(200)
+                self.send_header("Content-Type", ctype or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(os.fstat(f.fileno()).st_size))
+                self.send_header("Cache-Control", "no-cache")
+                for key, value in (headers or {}).items():
+                    self.send_header(key, value)
+                self.end_headers()
+                shutil.copyfileobj(f, self.wfile, length=1 << 20)
+        finally:
+            if cleanup:
+                path.unlink(missing_ok=True)
 
     def _start(self, job):
         """Start a job in the background: a dig, own files or a re-run — one at a time."""
         global WORKER, STATE
-        if WORKER and WORKER.is_alive() and not STATE.stop:      # a stopped job doesn't block
-            return self._json({"error": T("wait until the dig is finished")}, 409)
-        st = core.JobState()
-        st.status, st.busy = "running", True
-        STATE = st
-        WORKER = threading.Thread(target=run_worker, args=(job, st), daemon=True)
-        WORKER.start()
+        with JOB_LOCK:
+            ACTIVE_JOBS[:] = [(th, old) for th, old in ACTIVE_JOBS if th.is_alive() or old.background]
+            if ((WORKER and WORKER.is_alive() and not STATE.stop)
+                    or len(ACTIVE_JOBS) >= MAX_ACTIVE_JOBS):
+                return self._json({"error": T("wait until the dig is finished")}, 409)
+            st = core.JobState()
+            st.status, st.busy = "running", True
+            worker = threading.Thread(target=run_worker, args=(job, st), daemon=True)
+            previous = STATE, WORKER
+            STATE, WORKER = st, worker
+            ACTIVE_JOBS.append((worker, st))
+            try:
+                worker.start()
+            except BaseException:
+                ACTIVE_JOBS.remove((worker, st))
+                STATE, WORKER = previous
+                raise
         return self._json({"ok": True})
 
     def _upload(self):
@@ -645,7 +682,9 @@ class Handler(BaseHTTPRequestHandler):
                 params = core.normalize_params(b.get("params") or {})
                 return self._start(lambda st: core.run_rerun(d, track, params, out_root(), st))
             if u.path == "/api/stop":
-                STATE.request_stop()                 # also kills the analysis processes at once
+                with JOB_LOCK:
+                    stopped_state = STATE
+                stopped_state.request_stop()         # killing old processes must not hold the admission lock
                 return self._json({"ok": True})
             if u.path == "/api/settings":
                 if b.get("source") in ("ytmusic", "youtube"):
@@ -699,16 +738,8 @@ class Handler(BaseHTTPRequestHandler):
                     if zpath:
                         zpath.unlink(missing_ok=True)
                     return self._json({"error": T("loop files not found on disk")}, 404)
-                data = zpath.read_bytes()
-                zpath.unlink(missing_ok=True)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Content-Disposition", f'attachment; filename="{zname}"')
-                self.send_header("X-Loops", str(added))
-                self.end_headers()
-                self.wfile.write(data)
-                return
+                return self._file(zpath, "application/zip", {
+                    "Content-Disposition": f'attachment; filename="{zname}"', "X-Loops": str(added)}, cleanup=True)
             if u.path == "/api/zip":
                 items = b.get("items") or []
                 if not items:
@@ -740,16 +771,8 @@ class Handler(BaseHTTPRequestHandler):
                 zpath, added, zname = build_oneshot_zip(str(b.get("dig", "")), str(b.get("name", "")))
                 if zpath is None:
                     return self._json({"error": zname}, 404)
-                data = zpath.read_bytes()
-                zpath.unlink(missing_ok=True)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Content-Disposition", f'attachment; filename="{zname}"')
-                self.send_header("X-Loops", str(added))
-                self.end_headers()
-                self.wfile.write(data)
-                return
+                return self._file(zpath, "application/zip", {
+                    "Content-Disposition": f'attachment; filename="{zname}"', "X-Loops": str(added)}, cleanup=True)
             if u.path == "/api/wrong":              # Debugging mode: 👎 wrong match — set or remove
                 wrong = set_wrong(str(b.get("dig", "")), str(b.get("name", "")), bool(b.get("on", True)))
                 if wrong is None:

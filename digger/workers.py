@@ -23,6 +23,7 @@ from .i18n import T
 MAX_WORKERS = 3
 GB_PER_WORKER = 2.5          # very generous: one analysis peaks at ~0.2-0.35 GB, the rest is for the OS and browser
 MAX_CRASHES = 2              # after this many pool crashes we switch to a single thread
+_FALLBACK_SLOT = threading.Semaphore(1)  # includes stopped jobs whose native DSP is still finishing
 
 
 def total_ram_gb() -> float | None:
@@ -68,10 +69,14 @@ def _init_worker(threads: int):
             k = ctypes.windll.kernel32
             k.SetPriorityClass(k.GetCurrentProcess(), 0x4000)       # BELOW_NORMAL_PRIORITY_CLASS
         else:
+            os.setsid()  # decoders inherit this analysis-owned process group
+            os.environ["YTDIGGER_ANALYSIS_GROUP"] = str(os.getpid())
             os.nice(5)
     except Exception:
         pass
-    from . import spec, core  # noqa: F401  (numpy/scipy load now, not on the first track)
+    from . import spec, core, dsp  # noqa: F401  (numpy/scipy load now, not on the first track)
+    if os.name == "nt":
+        dsp.own_analysis_process()
     spec.FFT_WORKERS = threads
 
 
@@ -83,7 +88,8 @@ def _ping() -> int:
 class Analyzer:
     """Pool of analysis processes with a fallback to a daemon thread."""
 
-    def __init__(self, log, tasks: int | None = None, tmp: Path | None = None):
+    def __init__(self, log, tasks: int | None = None, tmp: Path | None = None,
+                 on_start=None, on_finish=None):
         self.log = log
         self.n = worker_count(tasks)
         self.tmp = tmp
@@ -91,7 +97,11 @@ class Analyzer:
         self.crashes = 0
         self._lock = threading.RLock()
         self._closed = threading.Event()
-        self._clean_tmp()                         # leftovers of a previous "Stop" — temporary audio
+        self._on_start = on_start or (lambda: None)
+        self._on_finish = on_finish or (lambda: None)
+        self._fallbacks = set()
+        if self.tmp:
+            Path(self.tmp).mkdir(parents=True, exist_ok=True)
         self._start()
 
     def _clean_tmp(self):
@@ -119,7 +129,7 @@ class Analyzer:
             return
         try:
             import multiprocessing as mp
-            threads = max(1, (os.cpu_count() or 1) // self.n)
+            threads = 1  # nested FFT/BLAS teams inflate commit without improving track throughput
             for v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
                 os.environ[v] = str(threads)                   # only affects newly started processes
             kw = dict(max_workers=self.n, mp_context=mp.get_context("spawn"),
@@ -130,7 +140,7 @@ class Analyzer:
             for _ in range(self.n):                            # processes start now, while the search is running
                 self.ex.submit(_ping)
         except Exception as e:
-            self.ex = None
+            self._drop()  # even a failed warm-up may already own live children
             self.log(T("⚠ Parallel analysis unavailable ({e}) — working in a single thread", e=str(e)[:120]))
 
     def submit(self, fn, *args) -> Future:
@@ -165,35 +175,58 @@ class Analyzer:
             return f
 
         def work():
-            if self._closed.is_set():
-                f.cancel()
-                return
-            if not f.set_running_or_notify_cancel():
-                return
+            acquired = False
             try:
-                f.set_result(fn(*args))
+                while not self._closed.is_set():
+                    if _FALLBACK_SLOT.acquire(timeout=0.05):
+                        acquired = True
+                        break
+                if self._closed.is_set() or not f.set_running_or_notify_cancel():
+                    f.cancel()
+                    return
+                from . import dsp
+                with dsp.cancellation(self._closed):
+                    f.set_result(fn(*args))
             except BaseException as e:   # noqa: BLE001 — the error goes to the caller through the Future
-                f.set_exception(e)
+                if not f.done():
+                    f.set_exception(e)
+            finally:
+                if acquired:
+                    _FALLBACK_SLOT.release()
+                with self._lock:
+                    self._fallbacks.discard(threading.current_thread())
+                self._on_finish()
 
-        threading.Thread(target=work, daemon=True, name="analysis-fallback").start()
+        th = threading.Thread(target=work, daemon=True, name="analysis-fallback")
+        self._fallbacks.add(th)
+        self._on_start()
+        try:
+            th.start()
+        except BaseException:
+            self._fallbacks.discard(th)
+            self._on_finish()
+            raise
         return f
 
     def _drop(self):
-        """Forget a broken pool without waiting for it."""
-        ex, self.ex = self.ex, None
+        """Atomically transfer pool ownership to teardown before another kill/finish sees None."""
+        with self._lock:
+            ex, self.ex = self.ex, None
+            if ex is not None:
+                self._on_start()
         if ex is not None:
             try:
-                ex.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                pass
+                self._terminate(ex)
+            finally:
+                self._on_finish()
 
     def kill(self):
         """"Stop": kill the processes immediately (unfinished analyses are abandoned)."""
         self._closed.set()
-        with self._lock:
-            ex, self.ex = self.ex, None
-        if ex is None:
-            return
+        self._drop()
+
+    def _terminate(self, ex):
+        """Reap killed workers before deleting their owned decoder files."""
         procs = list((getattr(ex, "_processes", None) or {}).values())
         try:
             ex.shutdown(wait=False, cancel_futures=True)
@@ -201,21 +234,57 @@ class Analyzer:
             pass
         for p in procs:
             try:
-                p.terminate()
+                if os.name != "nt":
+                    import signal
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        p.terminate()  # initializer may not have established its group yet
+                else:
+                    p.terminate()
             except Exception:
                 pass
         t = time.time() + 3
         for p in procs:
             try:
                 p.join(max(0.0, t - time.time()))
+                if p.is_alive():
+                    p.kill()
+                    p.join(1)
             except Exception:
                 pass
-        self._clean_tmp()                         # temporary audio of the killed analyses
+        with self._lock:
+            if not self._fallbacks and not any(p.is_alive() for p in procs):
+                self._clean_tmp()
+        self._watch_processes(procs)
+
+    def _watch_processes(self, procs):
+        """Keep a stopped job accounted for until even a slow process teardown is over."""
+        alive = [p for p in procs if p.is_alive()]
+        if not alive:
+            return
+        self._on_start()
+
+        def reap():
+            try:
+                for p in alive:
+                    p.join()
+            finally:
+                self._on_finish()
+
+        threading.Thread(target=reap, daemon=True, name="analysis-reaper").start()
 
     def close(self):
         """Release an already drained pool without blocking the job on process teardown."""
         self._closed.set()
         with self._lock:
             ex, self.ex = self.ex, None
+            if ex is not None:
+                self._on_start()
         if ex is not None:
-            ex.shutdown(wait=False, cancel_futures=True)
+            procs = list((getattr(ex, "_processes", None) or {}).values())
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            finally:
+                self._watch_processes(procs)
+                self._on_finish()

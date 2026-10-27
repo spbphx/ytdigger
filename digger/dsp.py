@@ -15,11 +15,15 @@ P0 / P1 / a / b are sample positions at SR (48 kHz).
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from concurrent.futures import CancelledError
 import functools
 import math
 import os
 import shutil
 import subprocess
+import threading
+import time
 import uuid
 import wave
 from fractions import Fraction
@@ -41,6 +45,84 @@ ASR = 24000           # sample rate used for analysis
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 _NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+FF_TIMEOUT = 300.0
+_CANCEL = threading.local()
+_ANALYSIS_OWNER = None
+_ANALYSIS_OWNER_PID = None
+
+
+@contextmanager
+def cancellation(event):
+    """Let a fallback analysis stop between DSP stages and while waiting for ffmpeg."""
+    previous = getattr(_CANCEL, "event", None)
+    _CANCEL.event = event
+    try:
+        check_cancelled()
+        yield
+    finally:
+        _CANCEL.event = previous
+
+
+def check_cancelled():
+    event = getattr(_CANCEL, "event", None)
+    if event is not None and event.is_set():
+        raise CancelledError("Analysis stopped")
+
+
+def _ff_job(proc):
+    """Own the decoder's lifetime on Windows, including an abruptly killed pool worker."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
+                    ("flags", wintypes.DWORD), ("min_ws", ctypes.c_size_t),
+                    ("max_ws", ctypes.c_size_t), ("active", wintypes.DWORD),
+                    ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD),
+                    ("scheduling", wintypes.DWORD)]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in
+                    ("read_ops", "write_ops", "other_ops", "read_bytes", "write_bytes", "other_bytes")]
+
+    class Limits(ctypes.Structure):
+        _fields_ = [("basic", BasicLimits), ("io", IoCounters),
+                    ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t),
+                    ("peak_process", ctypes.c_size_t), ("peak_job", ctypes.c_size_t)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateJobObjectW(None, None)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), "Cannot create decoder job")
+    limits = Limits()
+    limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not (kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits))
+            and kernel.AssignProcessToJobObject(handle, wintypes.HANDLE(int(proc._handle)))):
+        error = ctypes.get_last_error()
+        kernel.CloseHandle(handle)
+        raise OSError(error, "Cannot own decoder process")
+    return lambda: kernel.CloseHandle(handle)
+
+
+def own_analysis_process():
+    """Windows workers own a job before spawning decoders, so no child can escape on Stop."""
+    global _ANALYSIS_OWNER, _ANALYSIS_OWNER_PID
+    if os.name != "nt" or _ANALYSIS_OWNER_PID == os.getpid():
+        return
+    import ctypes
+    from ctypes import wintypes
+    from types import SimpleNamespace
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    _ANALYSIS_OWNER = _ff_job(SimpleNamespace(_handle=kernel.GetCurrentProcess()))
+    _ANALYSIS_OWNER_PID = os.getpid()
 
 
 # --------------------------------------------------------------------------- ffmpeg
@@ -61,14 +143,46 @@ def ffmpeg_exe() -> str:
 
 
 def _ff(args, data: bytes | None = None) -> bytes:
-    """Run ffmpeg with the given arguments (optionally feeding bytes to stdin). -> stdout bytes"""
-    r = subprocess.run(
+    """Run an owned decoder with a deadline and cooperative fallback cancellation."""
+    check_cancelled()
+    inherited_group = os.name != "nt" and os.environ.get("YTDIGGER_ANALYSIS_GROUP") == str(os.getpid())
+    proc = subprocess.Popen(
         [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", *args],
-        input=data, capture_output=True, creationflags=_NOWIN,
+        stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_NOWIN,
+        start_new_session=os.name != "nt" and not inherited_group,
     )
-    if r.returncode != 0:
-        raise RuntimeError("ffmpeg: " + r.stderr.decode("utf8", "replace")[-400:])
-    return r.stdout
+    close_job = None
+    try:
+        if _ANALYSIS_OWNER_PID != os.getpid():
+            close_job = _ff_job(proc)
+        deadline = time.monotonic() + FF_TIMEOUT
+        while True:
+            check_cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("ffmpeg: processing timed out")
+            try:
+                output, error = proc.communicate(input=data, timeout=min(0.2, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                data = None  # communicate retains the original input between waits
+        if proc.returncode != 0:
+            raise RuntimeError("ffmpeg: " + error.decode("utf8", "replace")[-400:])
+        return output
+    finally:
+        if proc.poll() is None:
+            if os.name != "nt" and not inherited_group:
+                import signal as process_signal
+                try:
+                    os.killpg(proc.pid, process_signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.kill()
+            proc.communicate()
+        if close_job is not None:
+            close_job()
 
 
 I16 = 16384.0        # the source is stored as int16 at -6 dB: real sample = q / I16 (no clipping)
@@ -89,7 +203,10 @@ def load_audio_i16(path, sr: int = SR, tmp_dir=None) -> np.ndarray:
         f = os.path.join(str(tmp_dir), f"an_{os.getpid()}_{uuid.uuid4().hex[:8]}.s16")
         try:
             _ff(["-y"] + args + [f])
-            x = np.memmap(f, dtype="<i2", mode="r").reshape(-1, 2) if os.path.getsize(f) >= 4 else np.zeros((0, 2), np.int16)
+            if os.path.getsize(f) < 4:
+                _unlink(f)
+                raise RuntimeError(T("the file is too short or empty"))
+            x = np.memmap(f, dtype="<i2", mode="r").reshape(-1, 2)
         except Exception:
             _unlink(f)
             raise
@@ -372,11 +489,13 @@ class TrackAnalysis:
     def __init__(self, audio: np.ndarray, want_iso: bool = False):
         """audio — int16 from load_audio_i16 (or float32 (N, 2)). want_iso — compute the features for
         "bass / vocals / pads only" right away (otherwise they aren't needed and no memory is spent)."""
+        check_cancelled()
         if audio.dtype != np.int16:
             audio = np.clip(np.round(np.asarray(audio, np.float32) * I16), -32768, 32767).astype(np.int16)
         self.x = audio                   # the audio itself (int16, sample = q / I16) — only needed for cutting
         self.dur = len(audio) / SR
         y, self.rise, self.rms_total = self._stream(audio)
+        check_cancelled()
 
         # --- onsets (attacks) for tempo and grid: mel bands computed chunk by chunk, no full spectrum
         n_fft, hop = 1024, 256
@@ -384,6 +503,7 @@ class TrackAnalysis:
         fb, centers = mel_filterbank(ASR, n_fft, 64, 30, 11000)
         fbT = fb.T.astype(np.float32)
         L = spec.db(spec.stft_reduce(y, n_fft, hop, lambda X: (X * X) @ fbT))
+        check_cancelled()
         L = np.maximum(L, L.max() - 80)
         self.mel = L.astype(np.float32)
         Ep = 10 ** (self.mel / 10.0)
@@ -397,30 +517,37 @@ class TrackAnalysis:
         del flux, L
         # "bass / vocals / pads only" features — now, while the 24 kHz signal exists (the share of
         # "note" frames is filled in below, once the long spectrum is computed)
-        self._iso = iso.features(y, ASR, self.mel, centers, self.fps, None, ASR / 1024) if want_iso else None
+        self._iso = iso.features(y, ASR, self.mel, centers, self.fps, None, ASR / 1024,
+                                 cancel=check_cancelled) if want_iso else None
+        check_cancelled()
 
         # --- spectrum for harmony (long window)
         cn, ch = 4096, 1024
         self.cfps = ASR / ch
         maxb = int(5000 / (ASR / cn))
         C = stft_mag(y, cn, ch, max_bin=maxb)
+        check_cancelled()
         del y                                                     # the 24 kHz signal is not needed any more
         cfreqs = np.fft.rfftfreq(cn, 1.0 / ASR)[:maxb]
         # share of "notes" in the 55-2100 Hz spectrum: pure drums ~0.1, with bass or chords 0.45+
         tb = (cfreqs >= 55) & (cfreqs <= 2100)
         tf = []
         for i in range(0, len(C), 2048):
+            check_cancelled()
             Cb = C[i:i + 2048, tb]
             tf.append((tonal_peaks(Cb) ** 2).sum(1) / ((Cb * Cb).sum(1) + 1e-12))
         self.tonal_frac = np.concatenate(tf).astype(np.float32)
         # frames where something with a harmonic series f, 2f, 3f... sounds (any instrument or voice)
         self.pitched = harmonic_frames(C, cfreqs[1] - cfreqs[0])
+        check_cancelled()
         if self._iso is not None:
             self._iso["pitched"] = self.pitched.astype(bool)
         eh, ep = spec.hpss_inplace(C, 17, 17)                     # C -> its sustained part, in place
+        check_cancelled()
         self.harm_ratio = (eh / (eh + ep + 1e-12)).astype(np.float32)
         self.tuning = estimate_tuning(C, cfreqs)
         chroma = tonal_chroma(C, cfreqs, self.tuning)
+        check_cancelled()
         del C
         self.chroma_raw = chroma.astype(np.float32)
         nrm = np.linalg.norm(chroma, axis=1, keepdims=True) + 1e-9
@@ -450,6 +577,7 @@ class TrackAnalysis:
         self.pulse_ac = float(max(aco[min(li, nn - 1)], aco[min(li + 1, nn - 1)], aco[min(2 * li, nn - 1)]))
         self.downbeat_phase = self.find_downbeat_phase()
         self.beat_feats = self.beat_features()
+        check_cancelled()
 
     @staticmethod
     def _stream(x: np.ndarray):
@@ -468,6 +596,7 @@ class TrackAnalysis:
         R, LA = 2048, 64                                          # context on the left (12 ms window) and on the right
         hist, h0, done, ss = np.zeros(0, np.float32), 0, 0, 0.0
         for a in range(0, n, spec.BLOCK):
+            check_cancelled()
             m = mono(a, a + spec.BLOCK)
             ss += float(np.dot(m.astype(np.float64), m))
             hp, zi = signal.sosfilt(sos, m, zi=zi)
@@ -537,7 +666,7 @@ class TrackAnalysis:
         if np.percentile(tot[-k:], 90) - np.median(tot[:-k]) >= 6.0:
             return True                                   # clearly louder at the end (a slow swell is fine)
         h = F["hon"][a:b]
-        if h[-k:].max() >= max(2.5 * float(np.median(F["hon"])), 1.6 * float(np.percentile(h[:-k], 90))):
+        if h[-k:].max() >= max(2.5 * iso.hon_median(F), 1.6 * float(np.percentile(h[:-k], 90))):
             return True                                   # a new note starts
         fm = self.fps
         am, bm, km = int(t0 * fm), int(t1 * fm), int(tail * fm)
@@ -703,6 +832,8 @@ class TrackAnalysis:
         score = np.zeros(n)
         back = -np.ones(n, dtype=np.int64)
         for t in range(n):
+            if t % 256 == 0:
+                check_cancelled()
             z = t + offs
             m = z >= 0
             if m.any():
@@ -786,6 +917,7 @@ class TrackAnalysis:
         harm = np.zeros(nb)
         rms = np.zeros(nb)
         for i in range(nb):
+            check_cancelled()
             a, b = mel_i[i], max(mel_i[i + 1], mel_i[i] + 1)
             timb[i] = self.mel[a:b].mean(0)
             ca, cb = ch_i[i], max(ch_i[i + 1], ch_i[i] + 1)
@@ -815,6 +947,7 @@ class TrackAnalysis:
         out = []
         start0 = self.downbeat_phase
         for s in range(start0, nb - L + 1, step_beats):
+            check_cancelled()
             e = s + L
             if e >= len(bt):
                 break
@@ -874,7 +1007,11 @@ class TrackAnalysis:
         """A "signature" of an off-grid span — in the same space as the signatures of beat-grid candidates."""
         a, b = int(t0 * self.fps), max(int(t1 * self.fps), int(t0 * self.fps) + 1)
         timb = self.mel[a:b].mean(0)
-        mu, sd = getattr(self, "timb_stats", (self.mel.mean(0), self.mel.std(0) + 1e-6))
+        stats = getattr(self, "timb_stats", None)
+        if stats is None:
+            stats = self.mel.mean(0), self.mel.std(0) + 1e-6
+            self.timb_stats = stats
+        mu, sd = stats
         timb = (timb - mu) / sd
         timb /= np.linalg.norm(timb) + 1e-9
         ca, cb = int(t0 * self.cfps), max(int(t1 * self.cfps), int(t0 * self.cfps) + 1)

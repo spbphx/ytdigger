@@ -38,9 +38,14 @@ HOW TO USE
      soul, rhodes, 1973        jazz funk flute        italian library 70s
    You can click the ready-made tags under the field. Empty = random records.
 2. Press "Dig". Records appear as soon as they are ready.
-3. The ▶ button plays a loop on repeat. You can start several at once:
+3. The ▶ button plays a loop on repeat. You can start up to six at once:
    the next ones come in exactly at the top of a bar and follow the tempo of the first —
    so you can hear right in the window how loops sound together.
+   Six small slots in the bottom bar show the active record covers, left to right.
+   Each loop starts at 75% volume: drag its cover up or down to adjust it smoothly.
+   Right-click a cover to scroll to its loop. You can also focus it with Tab, use
+   arrow keys for volume (Shift = larger steps), Home/End for 0/100%, and Enter to
+   find the loop. Master changes the overall listening level. Space stops all loops.
    When nothing plays, hovering a loop outlines the loops in a compatible key.
    During a jam the outline always shows the loops compatible with the first one
    started (the master), taking into account that the next loop follows its tempo and
@@ -48,8 +53,8 @@ HOW TO USE
    they sound in Emin). Loops that end up more than 35 cents out of tune are not
    outlined. The master's key is shown in the bottom bar next to the BPM. With
    "Tempo from first loop" off nothing is pitched and the original keys are compared.
-   "Download jam" (next to "Stop all") — a ZIP of the loops playing now, each pitched
-   exactly as it sounds in the jam. The archive is named after the master loop
+   "Download jam" — a ZIP of the loops playing now, each with its current pitch and
+   individual volume (Master is for listening only). The archive is named after the master loop
    (Gmaj95-<date>-<time>.zip), and the key and BPM in the loop names change to the
    ones after the pitch shift: Amaj80PName1 under a 95 BPM master becomes Cmaj95PName1
    (+3 semitones; Cmaj and Gmaj are Camelot neighbours). The rest of the name stays.

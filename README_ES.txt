@@ -38,9 +38,14 @@ CÓMO SE USA
      soul, rhodes, 1973        jazz funk flute        italian library 70s
    Puedes pulsar las etiquetas listas debajo del campo. Vacío = discos al azar.
 2. Pulsa «Excavar». Los discos aparecen a medida que están listos.
-3. El botón ▶ reproduce el loop en bucle. Puedes encender varios a la vez:
+3. El botón ▶ reproduce el loop en bucle. Puedes encender hasta seis a la vez:
    los siguientes entran justo al inicio del compás y siguen el tempo del primero,
    así compruebas en la misma ventana cómo suenan juntos.
+   Seis casillas pequeñas en la barra inferior muestran las portadas activas de izquierda a derecha.
+   Cada loop empieza al 75%: arrastra su portada arriba o abajo para ajustar el volumen.
+   Clic derecho en la portada lleva a su loop. Con el teclado: Tab para elegir portada,
+   flechas para el volumen (Shift = pasos mayores), Home/End para 0/100% y Enter para ir al loop.
+   Master ajusta el volumen general de escucha. Espacio detiene todos los loops.
    Si no suena nada, al pasar el ratón por un loop se marcan los loops de tonalidad
    compatible. Durante el jam el marco muestra siempre los loops compatibles con el
    primero encendido (el principal), teniendo en cuenta que el siguiente loop sigue su
@@ -49,8 +54,8 @@ CÓMO SE USA
    marcan. La tonalidad del principal se ve en la barra inferior junto al BPM. Con
    «Tempo del primer loop» desactivado no se cambia la altura y se comparan las
    tonalidades originales.
-   «Descargar jam» (junto a «Parar todo»): un ZIP con los loops que suenan ahora, cada uno
-   con el pitch exacto con el que suena en el jam. El archivo lleva el nombre del loop
+   «Descargar jam»: un ZIP con los loops que suenan ahora, con su pitch y volumen individual
+   actuales (Master solo afecta a la escucha). El archivo lleva el nombre del loop
    principal (Gmaj95-<fecha>-<hora>.zip) y en los nombres de los loops cambian la tonalidad
    y el BPM a los que resultan tras el pitch: Amaj80PName1 con un principal a 95 BPM pasa
    a Cmaj95PName1 (+3 semitonos; Cmaj y Gmaj son vecinos en Camelot). El resto del nombre

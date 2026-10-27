@@ -132,7 +132,7 @@ canvas.wave{width:100%;height:46px;display:block;cursor:pointer}
 .icon.on{color:#C08A00}
 
 /* ---------- jam bar at the bottom */
-.jam{position:fixed;left:380px;right:0;bottom:0;background:var(--ink);color:#fff;padding:12px 28px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.jam{position:fixed;left:380px;right:0;bottom:0;background:var(--ink);color:#fff;padding:14px 28px;display:flex;gap:16px 22px;align-items:center;flex-wrap:wrap;z-index:3;box-shadow:0 -1px 0 #ffffff12}
 @media (max-width:900px){.jam{left:0;padding:10px 16px}}
 .jam .tempo{font-stretch:62%;font-weight:900;font-size:30px;line-height:1;min-width:110px}
 .jam .tempo small{font-stretch:100%;font-weight:400;font-size:12px;opacity:.7;display:block}
@@ -143,6 +143,25 @@ canvas.wave{width:100%;height:46px;display:block;cursor:pointer}
 @media (max-width:1700px){.jamhint{display:none}}
 @media (max-width:900px){.jamhint{display:none}.jam{gap:10px 16px}.jam .tempo{font-size:24px;min-width:90px}}
 .jam .ghost{background:transparent;color:#fff;border-color:#59606b}
+.jam-mixer{display:grid;gap:7px}
+.jam-mixer label{color:#c6cbd3;font-size:12px}
+.jam-mixer input{margin:0;accent-color:#8e9eff}
+.jam-slots{display:flex;gap:5px}
+.jam-slot{width:32px;height:32px;position:relative;overflow:hidden;border-radius:5px;background:#171b21;box-shadow:inset 0 0 0 1px #ffffff14;flex:none;transition:transform 160ms cubic-bezier(.2,1.3,.4,1),box-shadow 160ms}
+.jam-slot[role=slider]{cursor:ns-resize;touch-action:none;user-select:none;background:#343b48;outline-offset:3px}
+.jam-slot img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}
+.jam-slot .slot-shade{position:absolute;inset:0;background:#080c136e;pointer-events:none}
+.jam-slot .slot-fill{position:absolute;inset:0;background:#c5d1ff38;border-top:1px solid #eef1ffb3;transform:scaleY(var(--level,.75));transform-origin:bottom;transition:transform 110ms cubic-bezier(.2,1.15,.4,1);pointer-events:none}
+.jam-slot:hover{box-shadow:inset 0 0 0 1px #ffffff50}
+.jam-slot.dragging{transform:scale(1.06);box-shadow:0 2px 12px #0005;z-index:1}
+.jam-master{display:grid!important;gap:4px!important;color:#c6cbd3;font-size:12px!important}
+.jam-master input{margin:0;accent-color:#a8b5ff}
+.loop{scroll-margin:24px 0 calc(var(--jam-height,120px) + 20px)}
+.loop.located{animation:locate-loop 1.3s ease-out}
+@keyframes locate-loop{from{box-shadow:0 0 0 3px #778aff}to{box-shadow:0 0 0 3px transparent}}
+@media (prefers-reduced-motion:reduce){.jam-slot,.jam-slot .slot-fill{transition:none}.loop.located{animation:none}}
+@media (pointer:coarse){.jam-slot{width:36px;height:36px}}
+@media (min-width:901px) and (max-width:1400px){.jam{gap:14px;padding:12px 20px}.jam .tempo{font-size:26px}}
 .toast{position:fixed;left:50%;bottom:112px;transform:translateX(-50%);background:var(--panel);color:var(--ink);border:1px solid var(--ink);padding:8px 14px;border-radius:8px;font-size:14px;display:none;gap:14px;align-items:center;max-width:calc(100vw - 32px);z-index:5}
 .toastbtn{border:0;background:none;color:var(--cobalt);font-weight:700;cursor:pointer;padding:0}
 .zip{margin-left:auto;border:0;border-radius:var(--r-sm);background:var(--cobalt);color:#fff;font-weight:800;font-stretch:85%;font-size:16px;padding:10px 16px;cursor:pointer}
@@ -252,8 +271,11 @@ body.debug .icon.dbgonly{display:inline-block}
 
 <div class="jam" id="jam">
   <div class="tempo" id="jamTempo"></div>
-  <label data-i18n-title="syncTitle"><input type="checkbox" id="syncRate" checked><span data-i18n="syncRate">Tempo from first loop</span></label>
-  <label><span data-i18n="volume">Volume</span> <input type="range" id="vol" min="0" max="1" step="0.01" value="0.85"></label>
+  <div class="jam-mixer">
+    <label data-i18n-title="syncTitle"><input type="checkbox" id="syncRate" checked><span data-i18n="syncRate">Tempo from first loop</span></label>
+    <div class="jam-slots" id="jamSlots" role="group" aria-label="Loop mixer"></div>
+  </div>
+  <label class="jam-master"><span data-i18n="volume">Master</span> <input type="range" id="vol" min="0" max="1" step="0.01" value="0.85"></label>
   <button class="ghost" id="jamZip" disabled data-i18n="jamZip" data-i18n-title="jamZipTitle">Download jam</button>
   <button class="zip" id="zipBtn" disabled data-i18n-title="zipTitle"></button>
   <span class="jamhint" data-i18n="jamHint">You can play several loops — the next ones come in at the top of the bar. Space stops everything.</span>
@@ -264,6 +286,7 @@ body.debug .icon.dbgonly{display:inline-block}
 const $ = s => document.querySelector(s);
 const CHIPS = ["jungle","jazz funk","soul","library","bass","drum break","1972"];
 let logSince = 0, polling = null, lastStatus = "idle", scrollToNew = false, lastSnap = null, healthInfo = null;
+let pollGeneration=0, pollInFlight=null, pollJob=null;
 
 /* ------------ languages: English, Russian, Spanish. Static text uses data-i18n* attributes,
    generated text calls t(key, {vars}); pl(n, key) picks the plural form. */
@@ -297,7 +320,7 @@ ru: {
   starting:"Начинаю…", log:"Журнал", working:"Работаю…", stError:"Ошибка — подробности в журнале", stStopped:"Остановлено", stDone:"Готово",
   emptyTitle:"Здесь появятся пластинки и лупы", emptyText:"Введите теги слева или оставьте поле пустым и нажмите «Копать». Новые копания добавляются вниз.",
   nothingPlaying:"ничего не играет", playingN:"играет лупов: {n}", syncRate:"Темп по первому лупу",
-  syncTitle:"Следующие лупы подстраиваются под темп первого включённого", volume:"Громкость", stopAll:"Остановить всё", jamZip:"Скачать джем", jamZipTitle:"ZIP с играющими лупами — каждый с тем питчем, с которым он звучит в джеме, и с новыми тональностью и BPM в имени",
+  syncTitle:"Следующие лупы подстраиваются под темп первого включённого", volume:"Master", mixerLabel:"Громкость играющих лупов", loopLimit:"Одновременно могут играть до 6 лупов", loopMixHint:"{name} · {n}%\nПотяните вверх или вниз — громкость\nПКМ или Enter — перейти к лупу", stopAll:"Остановить всё", jamZip:"Скачать джем", jamZipTitle:"ZIP с играющими лупами — каждый с тем питчем, с которым он звучит в джеме, и с новыми тональностью и BPM в имени",
   zip:"Скачать все", zipN:"Скачать все ({n})", zipTitle:"Все лупы с экрана как есть: BPM/тональность, BPM/DR для чистых барабанов, BPM/BS/тональность для чистого баса",
   zipBuilding:"Собираю ZIP…", zipFail:"Не получилось собрать ZIP", zipDone:"Скачано {n} {w} в {name}", zipMissing:", не нашёл файлов: {m}",
   chopTitle:"Нарезать луп на one-shot семплы (ZIP)", chopAria:"Нарезать на one-shot семплы",
@@ -362,7 +385,7 @@ en: {
   starting:"Starting…", log:"Log", working:"Working…", stError:"Error — details in the log", stStopped:"Stopped", stDone:"Done",
   emptyTitle:"Records and loops will appear here", emptyText:"Type tags on the left or leave the field empty and press “Dig”. New digs are added below.",
   nothingPlaying:"nothing playing", playingN:"loops playing: {n}", syncRate:"Tempo from first loop",
-  syncTitle:"Loops you start next follow the tempo of the first one", volume:"Volume", stopAll:"Stop all", jamZip:"Download jam", jamZipTitle:"ZIP of the loops playing now — each pitched as it sounds in the jam, with its new key and BPM in the name",
+  syncTitle:"Loops you start next follow the tempo of the first one", volume:"Master", mixerLabel:"Playing loop volumes", loopLimit:"Up to 6 loops can play at once", loopMixHint:"{name} · {n}%\nDrag up or down to adjust volume\nRight-click or Enter to find the loop", stopAll:"Stop all", jamZip:"Download jam", jamZipTitle:"ZIP of the loops playing now — each pitched as it sounds in the jam, with its new key and BPM in the name",
   zip:"Download all", zipN:"Download all ({n})", zipTitle:"All loops on screen as they are: BPM/key, BPM/DR for Drums Only, BPM/BS/key for Bass Only",
   zipBuilding:"Building ZIP…", zipFail:"Couldn't build the ZIP", zipDone:"Downloaded {n} {w} to {name}", zipMissing:", files not found: {m}",
   chopTitle:"Cut the loop into one-shot samples (ZIP)", chopAria:"Cut into one-shot samples",
@@ -427,7 +450,7 @@ es: {
   starting:"Empezando…", log:"Registro", working:"Trabajando…", stError:"Error: detalles en el registro", stStopped:"Detenido", stDone:"Listo",
   emptyTitle:"Aquí aparecerán los discos y los loops", emptyText:"Escribe etiquetas a la izquierda o deja el campo vacío y pulsa «Excavar». Las nuevas excavaciones se añaden abajo.",
   nothingPlaying:"no suena nada", playingN:"loops sonando: {n}", syncRate:"Tempo del primer loop",
-  syncTitle:"Los siguientes loops siguen el tempo del primero que encendiste", volume:"Volumen", stopAll:"Parar todo", jamZip:"Descargar jam", jamZipTitle:"ZIP con los loops que suenan: cada uno con el pitch con el que suena en el jam y con su nueva tonalidad y BPM en el nombre",
+  syncTitle:"Los siguientes loops siguen el tempo del primero que encendiste", volume:"Master", mixerLabel:"Volumen de los loops activos", loopLimit:"Pueden sonar hasta 6 loops a la vez", loopMixHint:"{name} · {n}%\nArrastra arriba o abajo para ajustar el volumen\nClic derecho o Enter para ir al loop", stopAll:"Parar todo", jamZip:"Descargar jam", jamZipTitle:"ZIP con los loops que suenan: cada uno con el pitch con el que suena en el jam y con su nueva tonalidad y BPM en el nombre",
   zip:"Descargar todo", zipN:"Descargar todo ({n})", zipTitle:"Todos los loops en pantalla tal cual: BPM/tonalidad, BPM/DR para solo batería, BPM/BS/tonalidad para solo bajo",
   zipBuilding:"Preparando ZIP…", zipFail:"No se pudo crear el ZIP", zipDone:"Descargados {n} {w} en {name}", zipMissing:", archivos no encontrados: {m}",
   chopTitle:"Cortar el loop en samples one-shot (ZIP)", chopAria:"Cortar en samples one-shot",
@@ -600,15 +623,28 @@ $("#go").onclick = async ()=>{
   logSince = 0; $("#log").textContent = "";   // old crates stay on screen
   startPolling();
 };
-function startPolling(){ clearInterval(polling); polling = setInterval(poll, 800); poll(); }
+function startPolling(){
+  clearTimeout(polling); polling=null; ++pollGeneration;
+  pollJob=null;
+  poll();
+}
 function curText(s){
   if(s.status==="running") return s.current || t("working");
   return s.status==="error" ? t("stError") : s.status==="stopped" ? t("stStopped") : (s.note || t("stDone"));
 }
 async function poll(){
+  const generation=pollGeneration;
+  if(pollInFlight!==null){
+    clearTimeout(polling); polling=setTimeout(poll,800); return;
+  }
+  clearTimeout(polling); polling=null; pollInFlight=generation;
   const revision = favoriteRevision;
+  try{
   let s; try{ s = await api("/api/state?since="+logSince); }catch(e){ return; }
+  if(generation!==pollGeneration) return;
   if(revision!==favoriteRevision) return;
+  if(pollJob && s.job_id && pollJob!==s.job_id){ pollJob=s.job_id; logSince=0; $("#log").textContent=""; return; }
+  if(s.job_id) pollJob=s.job_id;
   lastStatus = s.status; lastSnap = s;
   const running = s.status==="running";
   $("#go").disabled = false;
@@ -617,15 +653,20 @@ async function poll(){
   if(s.status!=="idle") $("#progress").hidden = false;
   $("#cur").textContent = curText(s);
   $("#meter").style.width = (s.progress*100)+"%";
-  if(s.log.length){ const L=$("#log"); L.textContent += s.log.join("\n")+"\n"; L.scrollTop=L.scrollHeight; logSince = s.log_total; }
+  if(s.log.length){ const L=$("#log"); L.textContent += s.log.join("\n")+"\n"; L.scrollTop=L.scrollHeight; }
+  logSince=s.log_total;
   try{
     if(s.dig){ renderDig(s.dig, s.tracks, running);
       if(scrollToNew){ scrollToNew = false; document.querySelector(`.digsec[data-dig="${CSS.escape(s.dig)}"]`)?.scrollIntoView({behavior:"smooth"}); } }
   }catch(e){ console.error("Unable to display crate", e); }
   if(s.found_cookies) $("#cookies_browser").value = s.found_cookies;
-  if(!running && !s.busy){ clearInterval(polling); polling=null; loadHistory(); if(s.status==="error" || s.note) $("#logBox").open = true;
+  if(!running && !s.busy){ pollInFlight="done"; loadHistory(); if(s.status==="error" || s.note) $("#logBox").open = true;
   }
-  else if(!running && !polling) startPolling();   // after "Stop", read the last log lines
+  }finally{
+    const done=pollInFlight==="done";
+    pollInFlight=null;
+    if(generation!==pollGeneration || !done){ clearTimeout(polling); polling=setTimeout(poll,generation!==pollGeneration?0:800); }
+  }
 }
 
 /* ------------ your own files */
@@ -961,7 +1002,9 @@ function pruneLoopState(){
   for(const id of Object.keys(rendered)) if(!shown.has(id)) delete rendered[id];
   for(const id of favoriteState.keys())
     if(!shown.has(id) && !favoritePending.has(id)) favoriteState.delete(id);
-  for(const id of Object.keys(buffers)) if(!shown.has(id) && !voices[id]) delete buffers[id];
+  for(const id of pendingStarts.keys()) if(!shown.has(id)) stopLoop(id);
+  for(const id of Object.keys(voices)) if(!shown.has(id)) stopLoop(id);
+  for(const id of Object.keys(buffers)) if(!shown.has(id) && !voices[id]) dropBuffer(id);
 }
 function updateCount(){
   pruneLoopState();
@@ -1049,7 +1092,7 @@ $("#history").onchange = async e=>{
 };
 $("#clearScreen").onclick = ()=>{
   if(!document.querySelector("#records .digsec")) return;
-  Object.keys(voices).forEach(stopLoop);
+  stopAllLoops();
   document.querySelectorAll("#records .digsec").forEach(e=>e.remove());
   hidden.clear(); api("/api/session",{action:"clear"}); updateCount();
   toast(t("cleared"));
@@ -1085,46 +1128,96 @@ $("#zipBtn").onclick = async ()=>{
 
 /* ------------ player and jam: loops start on the next bar of the first playing loop */
 let ctx=null, gain=null; const buffers={}, voices={};
+const MAX_VOICES=6, BUFFER_BUDGET=96*1024*1024;
+const bufferLoads=new Map(), bufferUse=new Map(), pendingStarts=new Map();
+let voiceOrder=0;
 function audio(){ if(!ctx){ ctx=new (window.AudioContext||window.webkitAudioContext)(); gain=ctx.createGain(); gain.gain.value=+$("#vol").value; gain.connect(ctx.destination);} return ctx; }
-$("#vol").oninput = e=>{ if(gain) gain.gain.value=+e.target.value; };
+function smoothGain(node, value){
+  const now=ctx.currentTime;
+  node.gain.cancelScheduledValues(now);
+  node.gain.setTargetAtTime(value, now, .018);
+}
+$("#vol").oninput = e=>{ if(gain) smoothGain(gain,+e.target.value); };
 function fileUrl(l){             // the same file that plays on screen and goes into the ZIP
   const f = l.files.stereo || l.files.mono;
   return "/files/"+encodeURIComponent(l.dig)+"/"+f.split("/").map(encodeURIComponent).join("/");
 }
-async function getBuf(l){
-  if(buffers[uid(l)]) return buffers[uid(l)];
-  const r = await fetch(fileUrl(l));
-  if(!r.ok) throw new Error("404");
-  const buf = await audio().decodeAudioData(await r.arrayBuffer());
-  if(rendered[uid(l)]) buffers[uid(l)] = buf;
-  return buf;
-}
-function master(){ const v=Object.values(voices); return v.length ? v.reduce((a,b)=>a.t0<b.t0?a:b) : null; }
-async function toggleLoop(l, el){
-  if(voices[uid(l)]){ stopLoop(uid(l)); return; }
-  let buf; try{ buf = await getBuf(l); }catch(e){ toast(t("openFail")); return; }
-  const c = audio(); if(c.state==="suspended") await c.resume();
-  if(!el.isConnected) return;             // the crate may have been removed while audio was loading
-  const m = master();
-  const src = c.createBufferSource(); src.buffer = buf; src.loop = true;
-  let rate = 1, t0 = c.currentTime + 0.03;
-  if(m){
-    if($("#syncRate").checked) rate = m.bpm / l.bpm;
-    const bar = 4*60/m.bpm;                                    // bar length of the master loop
-    t0 = m.t0 + Math.ceil((c.currentTime + 0.03 - m.t0)/bar)*bar;
+function dropBuffer(id){ delete buffers[id]; bufferUse.delete(id); }
+function trimBuffers(){
+  let bytes=0;
+  for(const b of Object.values(buffers)) bytes+=b.length*b.numberOfChannels*4;
+  for(const id of bufferUse.keys()){
+    if(bytes<=BUFFER_BUDGET) break;
+    if(voices[id] || pendingStarts.has(id)) continue;
+    const b=buffers[id]; if(b) bytes-=b.length*b.numberOfChannels*4;
+    dropBuffer(id);
   }
-  src.playbackRate.value = rate; src.connect(gain); src.start(t0);
-  voices[uid(l)] = {src, t0, bpm: m ? m.bpm : l.bpm, rate, dur: buf.duration/rate, el, l};
-  el.classList.add("playing"); el.querySelector(".play").innerHTML = ICON_STOP;
-  updateJam(); tick();
+}
+function getBuf(l){
+  const id=uid(l);
+  if(buffers[id]){ bufferUse.delete(id); bufferUse.set(id,true); return Promise.resolve(buffers[id]); }
+  if(bufferLoads.has(id)) return bufferLoads.get(id).promise;
+  const load={controller:new AbortController()};
+  load.promise=(async ()=>{
+    const r=await fetch(fileUrl(l),{signal:load.controller.signal});
+    if(!r.ok) throw new Error("404");
+    const buf=await audio().decodeAudioData(await r.arrayBuffer());
+    if(bufferLoads.get(id)===load && !load.controller.signal.aborted && rendered[id]){
+      buffers[id]=buf; bufferUse.set(id,true); trimBuffers();
+    }
+    return buf;
+  })().finally(()=>{ if(bufferLoads.get(id)===load) bufferLoads.delete(id); });
+  bufferLoads.set(id,load);
+  return load.promise;
+}
+function master(){ const v=Object.values(voices); return v.length ? v.reduce((a,b)=>a.order<b.order?a:b) : null; }
+async function toggleLoop(l, el){
+  const id=uid(l);
+  if(voices[id] || pendingStarts.has(id)){ stopLoop(id); return; }
+  if(Object.keys(voices).length+pendingStarts.size>=MAX_VOICES){ toast(t("loopLimit")); return; }
+  const token={}; pendingStarts.set(id,token); el.setAttribute("aria-busy","true");
+  try{
+    const c=audio();
+    // Resume inside the input gesture; loading/decode may outlive browser activation.
+    const resumed=c.state==="suspended" ? c.resume() : Promise.resolve();
+    const [buf]=await Promise.all([getBuf(l),resumed]);
+    if(pendingStarts.get(id)!==token || !el.isConnected || !rendered[id]) return;
+    const m=master(), src=c.createBufferSource(), loopGain=c.createGain();
+    src.buffer=buf; src.loop=true; loopGain.gain.value=.75;
+    let rate=1, t0=c.currentTime+.03;
+    if(m){
+      if($("#syncRate").checked) rate=m.bpm/l.bpm;
+      const bar=4*60/m.bpm;
+      t0=m.t0+Math.ceil((c.currentTime+.03-m.t0)/bar)*bar;
+    }
+    src.playbackRate.value=rate; src.connect(loopGain); loopGain.connect(gain);
+    const v={src,loopGain,volume:.75,t0,bpm:m?m.bpm:l.bpm,rate,dur:buf.duration/rate,el,l,order:++voiceOrder};
+    voices[id]=v;
+    src.onended=()=>{ if(voices[id]===v) stopLoop(id); };
+    try{ src.start(t0); }catch(e){ stopLoop(id); throw e; }
+    el.classList.add("playing"); el.querySelector(".play").innerHTML=ICON_STOP;
+    updateJam(); tick();
+  }catch(e){ if(pendingStarts.get(id)===token) toast(t("openFail")); }
+  finally{
+    if(pendingStarts.get(id)===token){ pendingStarts.delete(id); el.removeAttribute("aria-busy"); }
+    trimBuffers();
+  }
 }
 function stopLoop(id){
+  pendingStarts.delete(id);
+  const load=bufferLoads.get(id);
+  if(load){ bufferLoads.delete(id); load.controller.abort(); }
+  const row=voices[id]?.el || document.querySelector(`.loop[data-uid="${CSS.escape(id)}"]`);
+  row?.removeAttribute("aria-busy");
   const v = voices[id]; if(!v) return;
-  try{ v.src.stop(); }catch(e){}
   delete voices[id];
+  v.src.onended=null;
+  try{ v.src.stop(); }catch(e){}
+  v.src.disconnect(); v.src.buffer=null; v.loopGain.disconnect();
   v.el.classList.remove("playing"); v.el.querySelector(".play").innerHTML = ICON_PLAY;
-  drawWave(v.el.querySelector(".wave"), v.l.peaks, -1); updateJam();
+  drawWave(v.el.querySelector(".wave"), v.l.peaks, -1); updateJam(); trimBuffers();
 }
+function stopAllLoops(){ for(const id of new Set([...Object.keys(voices),...pendingStarts.keys()])) stopLoop(id); }
 /* "Download jam": the loops playing now, pitched exactly as they play (rate = master BPM / loop BPM),
    in a ZIP named after the master loop; the server renames them to their new key and BPM */
 $("#jamZip").onclick = async ()=>{
@@ -1133,7 +1226,7 @@ $("#jamZip").onclick = async ()=>{
   const btn = $("#jamZip"); btn.disabled = true;
   try{
     const r = await fetch("/api/jam_zip",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({items: v.map(x=>({dig:x.l.dig, name:x.l.name, rate:x.rate}))})});
+      body:JSON.stringify({items: v.map(x=>({dig:x.l.dig, name:x.l.name, rate:x.rate, volume:x.volume}))})});
     if(!r.ok){ const e = await r.json().catch(()=>({})); toast(e.error||t("zipFail")); return; }
     const blob = await r.blob();
     const name = (/filename="([^"]+)"/.exec(r.headers.get("Content-Disposition")||"")||[])[1] || "jam.zip";
@@ -1144,12 +1237,91 @@ $("#jamZip").onclick = async ()=>{
   }catch(e){ toast(t("zipFail")); }
   finally{ btn.disabled = !Object.keys(voices).length; }
 };
-document.addEventListener("keydown", e=>{ if(e.code==="Space" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){ e.preventDefault(); Object.keys(voices).forEach(stopLoop);} });
+document.addEventListener("keydown", e=>{ if(e.code==="Space" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){ e.preventDefault(); stopAllLoops();} });
+const mixerSlots=Array.from({length:MAX_VOICES},()=>{
+  const slot=document.createElement("div"); slot.className="jam-slot";
+  $("#jamSlots").append(slot);
+  slot.onpointerdown=e=>{
+    if(e.button!==0 || !voices[slot.dataset.uid]) return;
+    e.preventDefault(); slot.setPointerCapture(e.pointerId);
+    slot._drag={pointer:e.pointerId,y:e.clientY,volume:voices[slot.dataset.uid].volume};
+    slot.classList.add("dragging"); slot.focus({preventScroll:true});
+  };
+  slot.onpointermove=e=>{
+    const d=slot._drag;
+    if(d && d.pointer===e.pointerId) setLoopVolume(slot.dataset.uid,d.volume+(d.y-e.clientY)/140,slot);
+  };
+  const endDrag=()=>{ slot._drag=null; slot.classList.remove("dragging"); };
+  slot.onpointerup=e=>{ if(slot.hasPointerCapture(e.pointerId)) slot.releasePointerCapture(e.pointerId); endDrag(); };
+  slot.onpointercancel=endDrag; slot.onlostpointercapture=endDrag;
+  slot.oncontextmenu=e=>{
+    const v=voices[slot.dataset.uid]; if(!v) return;
+    e.preventDefault();
+    v.el.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"instant":"smooth",block:"center"});
+    v.el.classList.remove("located"); void v.el.offsetWidth; v.el.classList.add("located");
+  };
+  slot.onkeydown=e=>{
+    const v=voices[slot.dataset.uid]; if(!v) return;
+    let value;
+    if(e.key==="ArrowUp" || e.key==="ArrowRight") value=v.volume+(e.shiftKey ? .1 : .02);
+    if(e.key==="ArrowDown" || e.key==="ArrowLeft") value=v.volume-(e.shiftKey ? .1 : .02);
+    if(e.key==="Home") value=0;
+    if(e.key==="End") value=1;
+    if(value!==undefined){ e.preventDefault(); setLoopVolume(slot.dataset.uid,value,slot); }
+    if(e.key==="Enter"){ e.preventDefault(); slot.oncontextmenu(e); }
+  };
+  return slot;
+});
+function paintSlot(slot,v){
+  const percent=Math.round(v.volume*100);
+  slot.style.setProperty("--level",v.volume);
+  slot.setAttribute("aria-valuenow",percent);
+  slot.setAttribute("aria-valuetext",percent+"%");
+  slot.setAttribute("aria-label",v.l.name);
+  slot.title=t("loopMixHint",{name:v.l.name,n:percent});
+}
+function setLoopVolume(id,value,slot){
+  const v=voices[id]; if(!v) return;
+  v.volume=Math.max(0,Math.min(1,value)); smoothGain(v.loopGain,v.volume); paintSlot(slot,v);
+}
+function renderMixer(){
+  const active=Object.values(voices).sort((a,b)=>a.order-b.order);
+  $("#jamSlots").setAttribute("aria-label",t("mixerLabel"));
+  mixerSlots.forEach((slot,i)=>{
+    const v=active[i], id=v?uid(v.l):"";
+    if((slot.dataset.uid||"")!==id){
+      if(slot._drag){
+        if(slot.hasPointerCapture(slot._drag.pointer)) slot.releasePointerCapture(slot._drag.pointer);
+        slot._drag=null; slot.classList.remove("dragging");
+      }
+      // Remove the image and its source as soon as its voice leaves the mixer.
+      slot.querySelector("img")?.removeAttribute("src"); slot.replaceChildren();
+      delete slot.dataset.uid; slot.style.removeProperty("--level");
+      for(const attr of ["role","tabindex","aria-label","aria-orientation","aria-valuemin","aria-valuemax","aria-valuenow","aria-valuetext","title"]) slot.removeAttribute(attr);
+      if(v){
+        slot.dataset.uid=id; slot.tabIndex=0; slot.setAttribute("role","slider");
+        slot.setAttribute("aria-orientation","vertical"); slot.setAttribute("aria-valuemin","0"); slot.setAttribute("aria-valuemax","100");
+        const thumb=v.el.closest(".record")?._t?.thumb;
+        if(thumb){ const img=document.createElement("img"); img.alt=""; img.draggable=false; img.src=thumb; slot.append(img); }
+        for(const cls of ["slot-shade","slot-fill"]){ const overlay=document.createElement("span"); overlay.className=cls; slot.append(overlay); }
+      }
+    }
+    if(v) paintSlot(slot,v);
+  });
+}
+// Keep the last record and toast clear of the bar even when controls wrap.
+new ResizeObserver(entries=>{
+  const height=entries[0].target.getBoundingClientRect().height;
+  document.documentElement.style.setProperty("--jam-height",height+"px");
+  $("#records").closest(".crate").style.paddingBottom=(height+32)+"px";
+  $("#toast").style.bottom=(height+16)+"px";
+}).observe($("#jam"));
 function updateJam(){
   const m = master(), n = Object.keys(voices).length;
   $("#jamTempo").innerHTML = m ? `${m.bpm} BPM · ${esc(m.l.key)} <small>${esc(t("playingN",{n}))}</small>` : `— <small>${esc(t("nothingPlaying"))}</small>`;
   highlight(null);                       // the outline follows the master loop while something plays
   $("#jamZip").disabled = !n;
+  renderMixer();
 }
 $("#syncRate").addEventListener("change", ()=>highlight(null));
 let raf=null;

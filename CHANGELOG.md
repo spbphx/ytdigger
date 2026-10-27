@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5
+- Added a compact six-slot loop mixer in the jam bar. Playing loops fill the slots from left to right with their record covers; stopped loops release their thumbnail elements. Up to six loops can play at once, including starts still loading.
+- Every loop starts at 75% with its own gain. Drag its cover up or down for smooth volume changes, or use the arrow keys (Shift for larger steps), Home and End. Right-click a cover, or press Enter while focused, to scroll to that loop. The overall volume control is now called Master. Jam ZIPs preserve individual loop levels.
+- Fixed asynchronous playback races: repeated clicks, Stop, Space, and removing a crate invalidate pending starts. Audio loading is shared, finished sources disconnect, and the decoded-audio cache has a 96 MiB budget with active loops protected.
+- Fixed concurrent job starts and atomic crate-folder reservation. Stopped jobs retain ownership of their resources until actual background work exits; fallback analysis and abandoned network calls have shared concurrency limits. Temporary downloads and decoded audio are isolated per job.
+- Added cooperative fallback cancellation between DSP stages, bounded ffmpeg execution and owned decoder-process lifetimes. Empty decodes clean up their files. The saver releases the last saved audio result while waiting for new work.
+- Avoided repeatedly calculating full-track statistics in `sig_at`, and reused the isolation harmonic median. A fixed-seed 10-minute synthetic off-grid pad improved from 14.551 s to 12.375 s in one before/after pair, with byte-identical loop audio and boundaries; gains depend on the source and analysis mode. Analysis workers use one internal FFT/BLAS thread to reduce nested-thread resource use.
+- Polling requests no longer overlap or apply responses from a previous polling generation. Server logs use absolute cursors through retention rollover. Audio and ZIP responses stream from disk; exports reuse metadata within each request. Removed Python 3.12-only nested f-string syntax to retain the declared Python 3.10+ compatibility.
+- Included the previous fix: `fix: prevent duplicate search results from being processed twice`, with regression coverage for duplicate candidates.
+
 ## 1.4.3
 - YouTube searches skip live, scheduled and archived broadcasts using service metadata. Metadata checks and download guards prevent streams from reaching audio analysis or holding up a dig; a rejected broadcast does not trigger another download attempt.
 - "Download all" now stores Bass Only loops in `<BPM>/BS/<key>/`. Drums Only stays in `<BPM>/DR/`; other loop types keep their key folders. Audio filenames and paths in the Loops folder stay unchanged.

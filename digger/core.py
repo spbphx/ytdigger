@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import unicodedata
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -97,10 +98,12 @@ class JobState:
         self.reset()
 
     def reset(self):
+        self.job_id = uuid.uuid4().hex
         self.status = "idle"
         self.progress = 0.0
         self.current = ""
         self.log_lines: list[str] = []
+        self.log_total = 0
         self.tracks: list[dict] = []
         self.dig_name = ""
         self.stop = False
@@ -108,6 +111,33 @@ class JobState:
         self.note = ""          # the summary to show instead of "Done"
         self.stop_hooks = []    # what to do at once on "Stop" (kill the analysis processes)
         self.busy = False       # the job thread is still finishing (after "Stop" it no longer blocks a new job)
+        self.background = 0
+        self.tmp_dir = None
+
+    def temporary_dir(self, root: Path) -> Path:
+        """A job owns all of its disposable files, including abandoned network work."""
+        with self.lock:
+            if self.tmp_dir is None:
+                self.tmp_dir = Path(root) / ".tmp" / self.job_id
+                self.tmp_dir.mkdir(parents=True, exist_ok=True)
+            return self.tmp_dir
+
+    def background_started(self):
+        with self.lock:
+            self.background += 1
+
+    def background_finished(self):
+        with self.lock:
+            self.background -= 1
+        self.cleanup_temporary()
+
+    def cleanup_temporary(self):
+        """Only remove this job's tree after its last actual writer has finished."""
+        with self.lock:
+            if self.busy or self.background or self.tmp_dir is None:
+                return
+            path, self.tmp_dir = self.tmp_dir, None
+        shutil.rmtree(path, ignore_errors=True)
 
     def request_stop(self):
         """"Stop": the window is free for a new dig right away. The network drops its request, the analysis
@@ -127,14 +157,18 @@ class JobState:
         """Add a timestamped line to the job log (the interface fetches new lines)."""
         with self.lock:
             self.log_lines.append(time.strftime("%H:%M:%S ") + msg)
+            self.log_total += 1
             if len(self.log_lines) > 600:
                 self.log_lines = self.log_lines[-500:]
 
     def snapshot(self, since=0):
         """A copy of the state for /api/state; `since` — how many log lines the window already has."""
         with self.lock:
+            start = self.log_total - len(self.log_lines)
+            since = max(0, since) if since <= self.log_total else 0
             return dict(status=self.status, progress=round(self.progress, 3), current=self.current,
-                        log=self.log_lines[since:], log_total=len(self.log_lines),
+                        job_id=self.job_id, log=self.log_lines[max(0, since - start):],
+                        log_total=self.log_total, log_start=start, log_dropped=max(0, start - since),
                         tracks=self.tracks, dig=self.dig_name, found_cookies=self.found_cookies,
                         note=self.note, busy=self.busy)
 
@@ -220,10 +254,13 @@ def _new_dig_dir(root: Path, label: str) -> tuple[Path, str]:
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     dig_dir = root / f"{stamp}_{slug(label)}"
     k = 2
-    while dig_dir.exists():
-        dig_dir = root / f"{stamp}_{slug(label)}_{k}"
-        k += 1
-    dig_dir.mkdir(parents=True)
+    while True:
+        try:
+            dig_dir.mkdir()
+            break
+        except FileExistsError:
+            dig_dir = root / f"{stamp}_{slug(label)}_{k}"
+            k += 1
     return dig_dir, stamp
 
 
@@ -504,7 +541,8 @@ class Pipeline:
         self.sess, self.state, self.p = sess, state, sess.p
         self.total, self.lenient, self.on_accept = total, lenient, on_accept
         self.log = state.log
-        self.pool = workers.Analyzer(self.log, tasks=total, tmp=sess.root / ".tmp" / "analysis")
+        self.pool = workers.Analyzer(self.log, tasks=total, tmp=state.temporary_dir(sess.root) / "analysis",
+                                     on_start=state.background_started, on_finish=state.background_finished)
         if self.pool.parallel and self.pool.n > 1:
             self.log(T("⚙ Analysing in {n} parallel processes", n=self.pool.n))
         self.cv = threading.Condition()
@@ -515,8 +553,14 @@ class Pipeline:
         self.net = ""                             # what the network is doing right now (for the status line)
         self._n = 0
         self.q: queue.Queue = queue.Queue(maxsize=self.slots + 1)  # one extra slot for the shutdown sentinel
-        self.saver = threading.Thread(target=self._save_loop, daemon=True, name="saver")
-        self.saver.start()
+        self.saver = threading.Thread(target=self._save_worker, daemon=True, name="saver")
+        state.background_started()
+        try:
+            self.saver.start()
+        except BaseException:
+            state.background_finished()
+            self.pool.kill()
+            raise
         self._stop_hook = self.pool.kill
         state.stop_hooks.append(self._stop_hook)  # "Stop" — at once, even if the network is busy downloading
 
@@ -583,6 +627,12 @@ class Pipeline:
         if expired:
             raise RuntimeError(T("Analysis or saving timed out. Try fewer records or restart the program."))
 
+    def _save_worker(self):
+        try:
+            self._save_loop()
+        finally:
+            self.state.background_finished()
+
     def _save_loop(self):
         """Writer thread: takes finished analyses from the queue and saves them one at a time."""
         while True:
@@ -609,6 +659,8 @@ class Pipeline:
                     self.status()
                 except Exception:
                     traceback.print_exc()
+                # Future.result() can own tens of MB while the next q.get() blocks.
+                del item, fut, path, track
 
     def _handle(self, fut, path: Path, track: dict, label: str):
         """Log the result of one analysis and save its loops if the track fits."""
@@ -716,8 +768,9 @@ def run_dig(params: dict, root: Path, state: JobState):
     hist = History(root)
     rng = random.Random()
     try:
-        fetcher = Fetcher(root / ".tmp", log, p["cookies_browser"], cookie_file=APP_DIR / "cookies.txt",
-                          stop=lambda: state.stop, source=p["source"])
+        fetcher = Fetcher(state.temporary_dir(root) / "downloads", log, p["cookies_browser"],
+                          cookie_file=APP_DIR / "cookies.txt", stop=lambda: state.stop, source=p["source"],
+                          on_start=state.background_started, on_finish=state.background_finished)
     except ImportError:
         raise RuntimeError(T("yt-dlp is not installed. Launch the program with the start file — it "
                              "installs everything."))
@@ -739,6 +792,7 @@ def run_dig(params: dict, root: Path, state: JobState):
               "so digging takes longer",
               what=what_label(p)))
     pipe = Pipeline(sess, state, n, on_accept=lambda t: hist.add(t["id"]))
+    fetcher.on_wait = getattr(pipe, "_check_health", None)
     net_stopped = False                   # 429 or a bot check: network stops, downloaded tracks are finished
 
     try:
@@ -880,6 +934,20 @@ def run_local(files: list[tuple[Path, str]], params: dict, root: Path, state: Jo
     """Cut your own files (vinyl rips etc.) — in parallel. files = [(path, original name)]"""
     p = normalize_params(params)
     sess = Session(root, state, p, "my-files")
+    # Atomically claim upload tokens before Stop can make a replacement job visible.
+    # A stale request can then neither analyze nor delete another job's source.
+    uploads = state.temporary_dir(root) / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    claimed = []
+    for index, (path, orig) in enumerate(files):
+        owned = uploads / f"{index}_{Path(path).name}"
+        try:
+            Path(path).replace(owned)
+        except FileNotFoundError:
+            state.log(T("✕ {label}: {e}", label=orig, e="upload is no longer available"))
+            continue
+        claimed.append((owned, orig))
+    files = claimed
     pipe = Pipeline(sess, state, len(files), lenient=True)
     try:
         for i, (path, orig) in enumerate(files):
@@ -932,8 +1000,10 @@ def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobStat
                 raise RuntimeError(T("the source file was not kept — drag it into the window again"))
             log(T("   the source isn't in the crate folder — downloading again"))
             pipe.status(net=T("Downloading: {label}", label=label))
-            fetcher = Fetcher(root / ".tmp", log, p["cookies_browser"], cookie_file=APP_DIR / "cookies.txt",
-                              stop=lambda: state.stop, source=p["source"])
+            fetcher = Fetcher(state.temporary_dir(root) / "downloads", log, p["cookies_browser"],
+                              cookie_file=APP_DIR / "cookies.txt", stop=lambda: state.stop, source=p["source"],
+                              on_start=state.background_started, on_finish=state.background_finished)
+            fetcher.on_wait = getattr(pipe, "_check_health", None)
             src, downloaded = fetcher.download({"id": old["id"]}), True
             if fetcher.found_browser:
                 with state.lock:
@@ -979,7 +1049,8 @@ def write_meta(dig_dir: Path, meta: dict):
             a, b = l["src_start"], l["src_end"]
             how = (T("original tempo {bpm}, stretch {pct:+.1f}%", bpm=l["real_bpm"], pct=l["stretch_pct"])
                    if l.get("real_bpm") else T("no grid, cut exactly to tempo"))
-            kind = (f", {T(iso.KIND_LABEL[l['kind']])}{T(" (with extras)") if l.get('mixed') else ''}"
+            extras = T(" (with extras)") if l.get("mixed") else ""
+            kind = (f", {T(iso.KIND_LABEL[l['kind']])}{extras}"
                     if l.get("kind") else "")
             lines.append(f"  {l['name']}: {int(a // 60)}:{a % 60:05.2f}–{int(b // 60)}:{b % 60:05.2f}, "
                          + T("{bars} bar(s)", bars=f"{l['bars']:g}") + f", {how}{kind}")
@@ -987,6 +1058,7 @@ def write_meta(dig_dir: Path, meta: dict):
     (dig_dir / "credits.txt").write_text("\n".join(lines), "utf8")
     params = meta.get("params") or {}
     mono = params.get("formats") in ("both", "mono")
+    file_label, bars_label, steps_label, key_label = T("File"), T("Bars"), T("Steps"), T("Key")
     ms = [T("How to play these loops on the Elektron Model:Samples"), "",
           (T("1. Transfer the files from the ModelSamples_mono16 folder with Elektron Transfer.") if mono else
            T("1. Transfer the files from the Stereo_24bit folder with Elektron Transfer (it converts "
@@ -1002,7 +1074,7 @@ def write_meta(dig_dir: Path, meta: dict):
           *([T("7. The files are sorted into folders: ModelSamples_mono16/<key>/<BPM>/ —"),
              T("   transfer the whole folder and find loops on the device by key and tempo.")]
             if mono and params.get("sort_ms") else []), "",
-          f"{T("File"):<34}{'BPM':>5}{T("Bars"):>9}{T("Steps"):>7}  {T("Key"):<8} Camelot"]
+          f"{file_label:<34}{'BPM':>5}{bars_label:>9}{steps_label:>7}  {key_label:<8} Camelot"]
     for t in meta["tracks"]:
         for l in t["loops"]:
             ms.append(f"{l['name']:<34}{l['bpm']:>5}{l['bars']:>9g}{l['steps']:>7}  {l['key']:<8} {l['camelot']}")

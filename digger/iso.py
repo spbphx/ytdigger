@@ -61,7 +61,7 @@ TH = dict(
 )
 
 
-def _yin(y8, W=400, hop=160, fs=8000, fmin=80, fmax=1000, thr=0.2):
+def _yin(y8, W=400, hop=160, fs=8000, fmin=80, fmax=1000, thr=0.2, cancel=None):
     """YIN pitch tracker: fundamental frequency and aperiodicity every 20 ms (8 kHz signal).
     Returns (f0 Hz, aperiodicity 0..1 — low means a clear single pitch, frame RMS)."""
     n = (len(y8) - W) // hop
@@ -74,6 +74,8 @@ def _yin(y8, W=400, hop=160, fs=8000, fmin=80, fmax=1000, thr=0.2):
     frames = np.lib.stride_tricks.sliding_window_view(y8, W)[::hop][:n]
     taus = np.arange(1, tmax + 1)
     for a in range(0, n, 256):                          # small chunks — little temporary memory
+        if cancel is not None:
+            cancel()
         fr = frames[a:a + 256].astype(np.float64)
         F = np.fft.rfft(fr, 2 * W, axis=1)
         ac = np.fft.irfft(F * np.conj(F), axis=1)[:, :tmax + 1]
@@ -101,11 +103,13 @@ def _yin(y8, W=400, hop=160, fs=8000, fmin=80, fmax=1000, thr=0.2):
 
 
 def features(y: np.ndarray, sr: int, mel_db: np.ndarray, mel_centers: np.ndarray, mel_fps: float,
-             pitched: np.ndarray, pitched_fps: float) -> dict:
+             pitched: np.ndarray, pitched_fps: float, cancel=None) -> dict:
     """Per-frame features for the whole track. y — mono, sr — its sample rate (24 kHz);
     mel_db / pitched are already computed in TrackAnalysis (reused here)."""
     F = dict(fps=FPS, dur=len(y) / sr, pitched_fps=pitched_fps,
              pitched=None if pitched is None else pitched.astype(bool))   # None — the caller fills it in later
+    if cancel is not None:
+        cancel()
 
     # ---- mids and highs from the mel spectrum: total loudness, bands, percussive part (hats, snare)
     step = max(1, int(round(mel_fps / FPS)))
@@ -117,6 +121,8 @@ def features(y: np.ndarray, sr: int, mel_db: np.ndarray, mel_centers: np.ndarray
     F.update(tot=tot.astype(np.float32), mid=band(800, 3000).astype(np.float32),
              hi=band(3000, 8000).astype(np.float32))
     Hm, Pm = spec.hpss(np.sqrt(E).astype(np.float32), 9, 9)
+    if cancel is not None:
+        cancel()
     pb = lambda lo, hi: _db((Pm[:, (mel_centers >= lo) & (mel_centers < hi)] ** 2).sum(1))
     F["sn"] = pb(1500, 8000).astype(np.float32)        # percussive noise: hats, snare, shaker
     F["sb"] = pb(150, 500).astype(np.float32)          # snare "body"
@@ -129,13 +135,18 @@ def features(y: np.ndarray, sr: int, mel_db: np.ndarray, mel_centers: np.ndarray
     up = np.zeros_like(Hd)
     up[2:] = np.clip(Hd[2:] - Hd[:-2], 0, 12)
     F["hon"] = up.mean(1).astype(np.float32)
+    F["hon_median"] = float(np.median(F["hon"]))
 
     # ---- low end: 3 kHz signal, window 512 (5.9 Hz resolution), hop 64 (21.3 ms)
     yl = signal.resample_poly(y, 1, sr // 3000)          # float32 in -> float32 out
     S = spec.stft_mag(yl, 512, 64, 41)                  # up to 240 Hz
+    if cancel is not None:
+        cancel()
     del yl
     fl = np.arange(41) * 3000 / 512
     H, P = spec.hpss(S, 11, 9)
+    if cancel is not None:
+        cancel()
     b = (fl >= 35) & (fl < 160)
     m = min(len(S), n)
     Pl, Hl = _db((P[:m, b] ** 2).sum(1)), _db((H[:m, b] ** 2).sum(1))
@@ -148,6 +159,8 @@ def features(y: np.ndarray, sr: int, mel_db: np.ndarray, mel_centers: np.ndarray
     sb = S[:, b]
     fb = fl[b]
     for p in pk:
+        if cancel is not None:
+            cancel()
         if Pl[p] <= Hl[p] or p + 21 >= len(S):
             continue
         # a kick drops in pitch ("drift") and/or dies away fast; a bass note holds its pitch and rings
@@ -163,9 +176,16 @@ def features(y: np.ndarray, sr: int, mel_db: np.ndarray, mel_centers: np.ndarray
     sos = signal.butter(4, [180, 1500], "bandpass", fs=sr, output="sos")
     # magnitude response like filtfilt (two passes), decimation to 8 kHz — streamed, no copies of the track
     y8 = spec.down_stream(lambda a, b: y[a:b], len(y), sr // 8000, sos, passes=2)
-    f0, ap, rms = _yin(y8)
+    f0, ap, rms = _yin(y8, cancel=cancel)
     F.update(f0=f0, ap=ap, vrms=rms, vfps=50.0)
     return F
+
+
+def hon_median(F: dict) -> float:
+    """Global note-onset baseline; immutable features reuse it for every candidate."""
+    if "hon_median" not in F:
+        F["hon_median"] = float(np.median(F["hon"]))
+    return F["hon_median"]
 
 
 def metrics(F: dict, t0: float, t1: float) -> dict:
@@ -187,7 +207,7 @@ def metrics(F: dict, t0: float, t1: float) -> dict:
         sustain=float(np.median(F["hmid"][a:b] - F["pmid"][a:b])),               # sustained vs percussive mids
     )
     h = F["hon"][a:b]
-    pk, _ = signal.find_peaks(h, height=max(1.5, 2.5 * float(np.median(F["hon"]))), distance=int(0.08 * fps))
+    pk, _ = signal.find_peaks(h, height=max(1.5, 2.5 * hon_median(F)), distance=int(0.08 * fps))
     m["notes"] = len(pk) / d                                  # new note onsets per second
     sn = np.minimum(F["sb"][a:b], F["sn"][a:b] + 6) - T
     pk, _ = signal.find_peaks(sn, height=-14, prominence=8, distance=int(0.1 * fps))
