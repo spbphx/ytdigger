@@ -37,7 +37,7 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 FAV_DIR = "Favorites"          # copies of favourite loops on disk
 FEEDBACK_DIR = "Feedback"      # Debugging mode: loops marked "wrong match" with the analyzer's readings
 FAV_KEY = "★favorites"         # the Favorites "crate" on screen: collected from all crates
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 
 
 def default_out_dir() -> Path:
@@ -689,7 +689,7 @@ class Handler(BaseHTTPRequestHandler):
                 stopped_state.request_stop()         # killing old processes must not hold the admission lock
                 return self._json({"ok": True})
             if u.path == "/api/settings":
-                if b.get("source") in ("ytmusic", "youtube"):
+                if isinstance(b.get("source"), str) and b["source"] in core.SOURCES:
                     SETTINGS.setdefault("last", {})["source"] = b["source"]
                     save_settings(SETTINGS)
                 if "debug" in b:                       # "Debugging" checkbox in More settings

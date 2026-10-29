@@ -1,5 +1,5 @@
 """
-Searching YouTube Music or YouTube for records and downloading their audio.
+Searching YouTube Music, YouTube or YouTube Shorts and downloading their audio.
 ytmusicapi -> search (with fallbacks through yt-dlp), yt-dlp -> download.
 
 All network requests go strictly one at a time with random pauses between them (PAUSE), so the
@@ -60,13 +60,20 @@ ONLY_HINTS = {          # words added to the query for "Only ..." (with several 
 }
 PAUSE = (0.4, 1.2)       # random pause between requests to YouTube, seconds
 _NETWORK_SLOTS = threading.Semaphore(2)  # at most one abandoned request plus its replacement
-SOURCES = {"ytmusic": "YouTube Music", "youtube": "YouTube"}
+SOURCES = {"ytmusic": "YouTube Music", "youtube": "YouTube", "ytshorts": "YouTube Shorts"}
 RARE_HINTS = ["rare", "obscure", "private press", "deep", "unknown", "lost", "library", "promo"]
 
 
 def video_url(vid: str, source: str = "ytmusic") -> str:
+    if source == "ytshorts":
+        return f"https://www.youtube.com/shorts/{vid}"
     host = "www.youtube.com" if source == "youtube" else "music.youtube.com"
     return f"https://{host}/watch?v={vid}"
+
+
+def duration_limits(source: str) -> tuple[int, int]:
+    # The decoder needs at least five seconds; Shorts can run up to three minutes.
+    return (5, 180) if source == "ytshorts" else (95, 600)
 
 
 def _extra(rng, only, rare) -> list[str]:
@@ -264,7 +271,7 @@ class Fetcher:
     def __init__(self, tmp_dir: Path, log, cookies_browser: str | None = None, cookie_file: Path | None = None,
                  stop=None, source: str = "ytmusic", on_start=None, on_finish=None, on_wait=None):
         import yt_dlp  # noqa: F401  (check that it is installed)
-        self.source = source if source in ("ytmusic", "youtube") else "ytmusic"
+        self.source = source if isinstance(source, str) and source in SOURCES else "ytmusic"
         self.stop = stop or (lambda: False)   # has "Stop" been pressed?
         self._on_start = on_start or (lambda: None)
         self._on_finish = on_finish or (lambda: None)
@@ -386,7 +393,8 @@ class Fetcher:
     def _search(self, query: str, limit: int) -> list[dict]:
         """Try the search methods one by one until one returns results."""
         errors = []
-        methods = ((self._search_youtube,) if self.source == "youtube" else
+        methods = ((self._search_youtube_shorts,) if self.source == "ytshorts" else
+                   (self._search_youtube,) if self.source == "youtube" else
                    (self._search_ytmusicapi, self._search_ytdlp_music, self._search_ytdlp_plain))
         for fn in methods:
             if self.stop():
@@ -426,16 +434,23 @@ class Fetcher:
                 year=r.get("year"), query=query, views=parse_count(r.get("views"))))
         return out
 
-    def _flat(self, url, limit):
+    def _flat(self, url, limit, *, shorts_only=False):
         """A search results page through yt-dlp without resolving each entry (fast)."""
         import yt_dlp
         with yt_dlp.YoutubeDL(self._opts(extract_flat="in_playlist", playlistend=limit,
                                          noplaylist=False, match_filter=None)) as y:
-            info = y.extract_info(url, download=False)
+            if shorts_only:
+                from .shorts import YoutubeShortsSearchIE
+                y.add_info_extractor(YoutubeShortsSearchIE(y))
+                info = y.extract_info(url, download=False, ie_key=YoutubeShortsSearchIE.ie_key())
+            else:
+                info = y.extract_info(url, download=False)
         out = []
         for e in (info or {}).get("entries") or []:
             if not e or not e.get("id") or is_stream(e):
                 continue
+            if shorts_only and "/shorts/" not in (e.get("url") or ""):
+                continue  # ignore regular videos or unrelated shelves in a Shorts response
             out.append(dict(id=e["id"], title=e.get("title") or "",
                             artist=e.get("artist") or e.get("channel") or e.get("uploader") or "",
                             album=e.get("album") or "", duration=e.get("duration"), year=None,
@@ -457,6 +472,15 @@ class Fetcher:
     def _search_youtube(self, query, limit):
         """Search all YouTube videos, without restricting results to official audio."""
         res = self._flat(f"ytsearch{limit}:{query}", limit)
+        for r in res:
+            r["query"] = query
+        return res
+
+    def _search_youtube_shorts(self, query, limit):
+        """Use YouTube's Shorts type filter, rather than a keyword or short-video filter."""
+        # YouTube expects an escaped filter token inside the URL-encoded parameter.
+        params = urllib.parse.urlencode({"search_query": query, "sp": "EgIQCQ%3D%3D"})
+        res = self._flat("https://www.youtube.com/results?" + params, limit, shorts_only=True)
         for r in res:
             r["query"] = query
         return res
@@ -642,14 +666,17 @@ def era_check(cand: dict, info: dict, y0: int, y1: int, strict: bool):
     return True, None, T("year unknown")
 
 
-def basic_filter(cand: dict, min_s=95, max_s=600, *, source="ytmusic") -> str | None:
-    """Quick rejection by title/length; type beats are allowed on YouTube. -> reason or None"""
+def basic_filter(cand: dict, min_s=None, max_s=None, *, source="ytmusic") -> str | None:
+    """Quick rejection by title/length; type beats are allowed on YouTube and Shorts."""
     if is_stream(cand):
         return T("live stream or broadcast — skipping")
     t = f"{cand.get('title', '')} {cand.get('album', '')} {cand.get('artist', '')}"
-    if BAD.search(t) or (source != "youtube" and TYPE_BEAT.search(t)):
+    if BAD.search(t) or (source not in ("youtube", "ytshorts") and TYPE_BEAT.search(t)):
         return T("not it (remix/lo-fi/beat)")
     d = cand.get("duration")
+    lo, hi = duration_limits(source)
+    min_s = lo if min_s is None else min_s
+    max_s = hi if max_s is None else max_s
     if d and (d < min_s or d > max_s):
         return T("wrong length")
     return None

@@ -197,6 +197,7 @@ body.debug .icon.dbgonly{display:inline-block}
     <div class="sources" id="source" role="group" data-i18n-aria="sourceLab" aria-label="Search service" data-value="ytmusic">
       <button type="button" data-v="ytmusic" title="YouTube Music" aria-label="YouTube Music" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#FF0033"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="#fff"/><path d="M9.5 7.5v9l7-4.5z" fill="#fff"/></svg></button>
       <button type="button" data-v="youtube" data-i18n-title="youtubeHint" title="YouTube — more junk, podcasts and Type Beats" aria-label="YouTube" aria-pressed="false"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M27.42 3.12A3.5 3.5 0 0 0 24.94.64C22.76.06 14 .06 14 .06S5.24.06 3.06.64A3.5 3.5 0 0 0 .58 3.12C0 5.3 0 10 0 10s0 4.7.58 6.88a3.5 3.5 0 0 0 2.48 2.48c2.18.58 10.94.58 10.94.58s8.76 0 10.94-.58a3.5 3.5 0 0 0 2.48-2.48C28 14.7 28 10 28 10s0-4.7-.58-6.88z" fill="#FF0033"/><path d="m11.2 14.2 7.28-4.2-7.28-4.2z" fill="#fff"/></svg></button>
+      <button type="button" data-v="ytshorts" data-i18n-title="shortsHint" title="YouTube Shorts — short videos" aria-label="YouTube Shorts" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16.8 1.3-11 6.3a4.5 4.5 0 0 0 0 7.8l2 1.1-2 1.2a3.4 3.4 0 0 0 3.4 5.9l9-5.2a4.5 4.5 0 0 0 0-7.8l-2-1.1 4-2.3a3.4 3.4 0 0 0-3.4-5.9Z" fill="#FF0033"/><path d="m10 8 6 4-6 4Z" fill="#fff"/></svg></button>
     </div>
     </div>
     <h1 class="brand"><span>YT</span>Digger</h1>
@@ -292,6 +293,7 @@ let pollGeneration=0, pollInFlight=null, pollJob=null;
    generated text calls t(key, {vars}); pl(n, key) picks the plural form. */
 const I18N = {
 ru: {
+  shortsHint:"YouTube Shorts — короткие видео от 5 секунд до 3 минут",
   tagline:"Пластинки с {source}, нарезанные в ровные лупы", sourceLab:"Сервис для поиска", youtubeHint:"YouTube — тут попадается больше мусора, подкастов и Type Beats", ask:"Что ищем в ящике?", rare:"Искать редкие",
   tagsHint:"Оставьте пустым — будут случайные пластинки", nTracks:"Пластинок", nLoops:"Лупов с каждой",
   barsLab:"Длина лупа", bar1:"1 такт", bar2:"2 такта", bar4:"4 такта",
@@ -357,6 +359,7 @@ ru: {
   loops:["луп","лупа","лупов"], bars:["такт","такта","тактов"], steps:["шаг","шага","шагов"],
 },
 en: {
+  shortsHint:"YouTube Shorts — short videos from 5 seconds to 3 minutes",
   tagline:"Records from {source}, chopped into tight loops", sourceLab:"Search service", youtubeHint:"YouTube — more junk, podcasts and Type Beats here", ask:"What are we digging for?", rare:"Look for rare ones",
   tagsHint:"Leave empty for random records", nTracks:"Records", nLoops:"Loops per record",
   barsLab:"Loop length", bar1:"1 bar", bar2:"2 bars", bar4:"4 bars",
@@ -422,6 +425,7 @@ en: {
   loops:["loop","loops"], bars:["bar","bars"], steps:["step","steps"],
 },
 es: {
+  shortsHint:"YouTube Shorts — vídeos cortos de 5 segundos a 3 minutos",
   tagline:"Discos de {source} cortados en loops exactos", sourceLab:"Servicio de búsqueda", youtubeHint:"YouTube — aquí hay más basura, podcasts y Type Beats", ask:"¿Qué buscamos en la caja?", rare:"Buscar rarezas",
   tagsHint:"Déjalo vacío para discos al azar", nTracks:"Discos", nLoops:"Loops por disco",
   barsLab:"Duración del loop", bar1:"1 compás", bar2:"2 compases", bar4:"4 compases",
@@ -528,13 +532,14 @@ function setLang(l){
 document.querySelectorAll(".langs button").forEach(b=>b.onclick = ()=>setLang(b.dataset.lang));
 
 /* ------------ the settings form */
+const SOURCE_NAMES = {ytmusic:"YouTube Music", youtube:"YouTube", ytshorts:"YouTube Shorts"};
 function updateSource(){
   const box = $("#source"), val = box.dataset.value;
   box.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", b.dataset.v===val));
-  $("#tagline").textContent = t("tagline", {source:val==="youtube" ? "YouTube" : "YouTube Music"});
+  $("#tagline").textContent = t("tagline", {source:SOURCE_NAMES[val]});
 }
 function setSource(val){
-  $("#source").dataset.value = val==="youtube" ? "youtube" : "ytmusic";
+  $("#source").dataset.value = Object.hasOwn(SOURCE_NAMES, val) ? val : "ytmusic";
   updateSource();
 }
 $("#source").querySelectorAll("button").forEach(b=>b.onclick = async ()=>{

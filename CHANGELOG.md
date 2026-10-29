@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2
+- Added YouTube Shorts as a third search source with a matching selector button, remembered selection and translated tooltips. Searches use YouTube's Shorts filter and skip ordinary videos; Shorts accept 5–180 seconds of audio and type beats. Source links and re-runs retain the Shorts source.
+- Added compatibility with YouTube's grid-based Shorts search results, including continuation pages and duplicate-result protection, using yt-dlp for network requests and metadata extraction.
+
 ## 1.5.1
 - One-shot ZIP downloads are named `_{KEY}_{ORIGINAL_SONG_NAME}_{YYYY-MM-DD}_{HH-MM}.zip`, using the source song title instead of the `1shots` prefix. Unicode titles are preserved; characters invalid in file names are replaced.
 - Accelerated spectral HPSS median filtering with SciPy's 1D rank filter while preserving repeated-edge boundaries. Older SciPy versions, other dtypes and non-finite arrays retain the previous partition path; dependencies and analysis/selection stages are unchanged.

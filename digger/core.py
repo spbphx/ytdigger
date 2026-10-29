@@ -27,7 +27,7 @@ from collections import Counter
 from . import dsp, i18n, iso, workers
 from .i18n import P, T, set_lang
 from .sources import (SOURCES, BotBlocked, Fetcher, Stopped, StreamSkipped, basic_filter, build_query,
-                      era_check, explain_error, human_count, video_url)
+                      duration_limits, era_check, explain_error, human_count, video_url)
 
 APP_DIR = Path(__file__).resolve().parent.parent
 META_LOCK = threading.Lock()  # serialize crate saves and changes made by the star button
@@ -211,7 +211,7 @@ def normalize_params(p: dict) -> dict:
     """Settings from the interface -> a complete, validated dict (unknown or broken values fall back to defaults)."""
     q = dict(DEFAULTS)
     q.update({k: v for k, v in (p or {}).items() if k in DEFAULTS})
-    q["source"] = q["source"] if q["source"] in ("ytmusic", "youtube") else "ytmusic"
+    q["source"] = q["source"] if isinstance(q["source"], str) and q["source"] in SOURCES else "ytmusic"
     q["n_tracks"] = _int(q["n_tracks"], 1, 20, 5)
     q["n_loops"] = _int(q["n_loops"], 1, 8, 3)
     q["bars"] = q["bars"] if q["bars"] in (1, 2, 4, "1", "2", "4") else 2
@@ -873,7 +873,8 @@ def run_dig(params: dict, root: Path, state: JobState):
                     artist = artist.split(",")[0].strip()
                 dur = info.get("duration") or cand.get("duration") or 0
                 label = f"{artist} — {title}"
-                if dur and (dur < 95 or dur > 600):
+                min_s, max_s = duration_limits(p["source"])
+                if dur and (dur < min_s or dur > max_s):
                     log(T("⏭ {label}: length {sec} s — skipping", label=label, sec=int(dur)))
                     continue
                 views = info.get("view_count")
@@ -993,7 +994,9 @@ def find_source(dig_dir: Path, track: dict) -> Path | None:
 
 def run_rerun(dig_dir: Path, old: dict, params: dict, root: Path, state: JobState):
     """Re-run an already found record with new settings (pitching/stretching, loop type and length...)."""
-    source = old.get("source") or ("ytmusic" if "music.youtube.com/" in (old.get("url") or "") else "youtube")
+    url = old.get("url") or ""
+    source = old.get("source") or ("ytshorts" if "/shorts/" in url else
+                                   "ytmusic" if "music.youtube.com/" in url else "youtube")
     p = normalize_params(dict(params or {}, source=source))
     track = {k: old.get(k) for k in ("id", "title", "artist", "album", "year", "url", "query", "thumb", "views", "source")}
     track["source"] = p["source"]
